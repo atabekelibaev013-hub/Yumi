@@ -77,8 +77,13 @@
 </head>
 <body>
 
-  <!-- Sarlavhani 5 marta bossangiz Admin Panel ochiladi -->
-  <h2 onclick="handleHeaderClick()">💎 Yumi Olmos Games</h2>
+  <!-- Sarlavhani bosib tursangiz Admin Panel ochiladi -->
+  <h2 id="mainHeader" 
+      onmousedown="startHold()" 
+      onmouseup="cancelHold()" 
+      onmouseleave="cancelHold()"
+      ontouchstart="startHold()" 
+      ontouchend="cancelHold()">💎 Yumi Olmos Games</h2>
 
   <!-- Balans -->
   <div class="card">
@@ -90,7 +95,7 @@
   <div id="adminPanel" class="card admin-card" style="display: none;">
     <h3 style="color: #9b59b6;">👑 Ega Menyu (Bonus Kod Qo'yish)</h3>
     <p style="font-size: 12px; color: #bbb; margin-bottom: 8px;">Yangi kunlik bonus kodini yozing va saqlang:</p>
-    <input type="text" id="newAdminCode" class="bet-input" placeholder="Masalan: YUMI10">
+    <input type="text" id="newAdminCode" class="bet-input" placeholder="Masalan: 75">
     <button class="btn" style="background: #8e44ad;" onclick="saveAdminCode()">💾 Kodni Saqlash</button>
     <div id="adminMsg" style="font-size: 13px; margin-top: 5px; color: #2ecc71;"></div>
   </div>
@@ -163,31 +168,36 @@
     const tg = window.Telegram.WebApp;
     tg.expand();
 
-    // Balansni qurilma xotirasidan o'qish (saqlangan bo'lsa o'shani oladi, bo'lmasa 100)
-    let savedBalance = localStorage.getItem('yumi_user_balance');
+    // Har bir Telegram akkaunti uchun alohida ID olish (aks holda bir xil telefonda 2-akkaunt bloklanib qolayotgan edi)
+    const userId = (tg.initDataUnsafe && tg.initDataUnsafe.user && tg.initDataUnsafe.user.id) 
+      ? tg.initDataUnsafe.user.id 
+      : 'guest_user';
+
+    // Har bir akkaunt uchun balansni alohida saqlash
+    let savedBalance = localStorage.getItem('yumi_user_balance_' + userId);
     let userBalance = (savedBalance !== null && !isNaN(savedBalance)) 
       ? parseInt(savedBalance) 
       : 100;
 
     function updateBalance() {
       document.getElementById('balance').innerText = userBalance;
-      // Har gal balans o'zgarganda xotirada mustahkam saqlash
-      localStorage.setItem('yumi_user_balance', userBalance);
+      localStorage.setItem('yumi_user_balance_' + userId, userBalance);
     }
 
-    // Dastur ochilishi bilan xotiradagi oxirgi balansni yuklash
     updateBalance();
 
-    /* --- 👑 ADMIN PANEL VA KUNLIK BONUS SYSTEMA --- */
-    let headerClicks = 0;
+    /* --- 👑 ADMIN PANEL (BOSIB TURGANDA OCHILISHI) --- */
+    let holdTimer;
 
-    function handleHeaderClick() {
-      headerClicks++;
-      if (headerClicks >= 5) {
+    function startHold() {
+      holdTimer = setTimeout(() => {
         const adminPanel = document.getElementById('adminPanel');
         adminPanel.style.display = adminPanel.style.display === 'none' ? 'block' : 'none';
-        headerClicks = 0;
-      }
+      }, 3000); // Sarlavhani 3 soniya bosib tursangiz Ega Menyusi ochiladi
+    }
+
+    function cancelHold() {
+      clearTimeout(holdTimer);
     }
 
     function saveAdminCode() {
@@ -212,19 +222,22 @@
         return;
       }
 
-      const currentActiveCode = localStorage.getItem('yumi_active_bonus_code') || 'YUMI10';
-      const isClaimed = localStorage.getItem('yumi_claimed_' + userCode);
+      const currentActiveCode = localStorage.getItem('yumi_active_bonus_code') || '75';
+      
+      // Bonus kod har bir Telegram ID (akkaunt) uchun ALOHIDA tekshiriladi!
+      const isClaimedForThisUser = localStorage.getItem('yumi_claimed_' + userId + '_' + userCode);
 
       if (userCode !== currentActiveCode) {
         promoMsg.style.color = '#e74c3c';
         promoMsg.innerText = "❌ Bundoq bonus kodi mavjud emas yoki muddati o'tgan!";
-      } else if (isClaimed) {
+      } else if (isClaimedForThisUser) {
         promoMsg.style.color = '#f39c12';
         promoMsg.innerText = "⚠️ Siz bu bonus kodini allaqachon olgansiz! (Faqat 1 marta mumkin)";
       } else {
         userBalance += 10;
         updateBalance();
-        localStorage.setItem('yumi_claimed_' + userCode, 'true');
+        // Ushbu Telegram foydalanuvchisi ushbu kodni olganini saqlaymiz
+        localStorage.setItem('yumi_claimed_' + userId + '_' + userCode, 'true');
         promoMsg.style.color = '#2ecc71';
         promoMsg.innerText = "🎉 Tabriklaymiz! +10 💎 balansingizga qo'shildi!";
         document.getElementById('userPromoInput').value = '';
