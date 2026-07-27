@@ -8,7 +8,8 @@
   <style>
     body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #181f25; color: #fff; padding: 15px; margin: 0; text-align: center; }
     .card { background: #232e3c; padding: 15px; border-radius: 12px; margin-bottom: 15px; border: 1px solid #2b394a; box-shadow: 0 4px 10px rgba(0,0,0,0.3); }
-    h2 { color: #0088cc; margin-top: 5px; }
+    .admin-card { background: #2c2136; border: 1px solid #8e44ad; }
+    h2 { color: #0088cc; margin-top: 5px; cursor: pointer; user-select: none; }
     h3 { margin-bottom: 10px; color: #ffd700; }
     .btn { background: #248bcf; color: white; border: none; padding: 12px; border-radius: 8px; width: 100%; font-size: 15px; font-weight: bold; cursor: pointer; margin-top: 8px; }
     .btn:active { background: #1a6fa8; transform: scale(0.98); }
@@ -76,12 +77,31 @@
 </head>
 <body>
 
-  <h2>💎 Yumi Olmos Games</h2>
+  <!-- Sarlavhani 5 marta bossangiz Admin Panel ochiladi -->
+  <h2 onclick="handleHeaderClick()">💎 Yumi Olmos Games</h2>
 
   <!-- Balans -->
   <div class="card">
     <p style="margin:0; color:#aaa;">Sizning balansingiz:</p>
     <h1 style="margin:5px 0;"><span id="balance">100</span> 💎</h1>
+  </div>
+
+  <!-- 👑 ADMIN PANEL (Faqat ega uchun yashirin menyu) -->
+  <div id="adminPanel" class="card admin-card" style="display: none;">
+    <h3 style="color: #9b59b6;">👑 Ega Menyu (Bonus Kod Qo'yish)</h3>
+    <p style="font-size: 12px; color: #bbb; margin-bottom: 8px;">Yangi kunlik bonus kodini yozing va saqlang:</p>
+    <input type="text" id="newAdminCode" class="bet-input" placeholder="Masalan: YUMI10">
+    <button class="btn" style="background: #8e44ad;" onclick="saveAdminCode()">💾 Kodni Saqlash</button>
+    <div id="adminMsg" style="font-size: 13px; margin-top: 5px; color: #2ecc71;"></div>
+  </div>
+
+  <!-- 🎁 KUNLIK BONUS KOD MENYUSI -->
+  <div class="card">
+    <h3>🎁 Kunlik Bonus Kod</h3>
+    <p style="font-size: 12px; color: #bbb; margin-bottom: 8px;">Kanalda berilgan promo-kodni kiriting va <b>+10 💎</b> oling!</p>
+    <input type="text" id="userPromoInput" class="bet-input" placeholder="Bonus kodni kiriting...">
+    <button class="btn" style="background: #f39c12;" onclick="claimBonusCode()">🎁 Bonusni Olish (+10 💎)</button>
+    <div id="promoMsg" class="status-info" style="display: none; margin-top: 8px;"></div>
   </div>
 
   <!-- 💣 BO'MBA O'YINI -->
@@ -143,10 +163,72 @@
     const tg = window.Telegram.WebApp;
     tg.expand();
 
-    let userBalance = 100;
+    // Balansni qurilma xotirasidan o'qish (saqlangan bo'lsa o'shani oladi, bo'lmasa 100)
+    let savedBalance = localStorage.getItem('yumi_user_balance');
+    let userBalance = (savedBalance !== null && !isNaN(savedBalance)) 
+      ? parseInt(savedBalance) 
+      : 100;
 
     function updateBalance() {
       document.getElementById('balance').innerText = userBalance;
+      // Har gal balans o'zgarganda xotirada mustahkam saqlash
+      localStorage.setItem('yumi_user_balance', userBalance);
+    }
+
+    // Dastur ochilishi bilan xotiradagi oxirgi balansni yuklash
+    updateBalance();
+
+    /* --- 👑 ADMIN PANEL VA KUNLIK BONUS SYSTEMA --- */
+    let headerClicks = 0;
+
+    function handleHeaderClick() {
+      headerClicks++;
+      if (headerClicks >= 5) {
+        const adminPanel = document.getElementById('adminPanel');
+        adminPanel.style.display = adminPanel.style.display === 'none' ? 'block' : 'none';
+        headerClicks = 0;
+      }
+    }
+
+    function saveAdminCode() {
+      const newCode = document.getElementById('newAdminCode').value.trim().toUpperCase();
+      if (!newCode) {
+        alert("Iltimos, yangi bonus kodini kiriting!");
+        return;
+      }
+      localStorage.setItem('yumi_active_bonus_code', newCode);
+      document.getElementById('adminMsg').innerText = `✅ Yangi bonus kodi saqlandi: "${newCode}"`;
+      document.getElementById('newAdminCode').value = '';
+    }
+
+    function claimBonusCode() {
+      const userCode = document.getElementById('userPromoInput').value.trim().toUpperCase();
+      const promoMsg = document.getElementById('promoMsg');
+      promoMsg.style.display = 'block';
+
+      if (!userCode) {
+        promoMsg.style.color = '#e74c3c';
+        promoMsg.innerText = "❌ Iltimos, bonus kodini kiriting!";
+        return;
+      }
+
+      const currentActiveCode = localStorage.getItem('yumi_active_bonus_code') || 'YUMI10';
+      const isClaimed = localStorage.getItem('yumi_claimed_' + userCode);
+
+      if (userCode !== currentActiveCode) {
+        promoMsg.style.color = '#e74c3c';
+        promoMsg.innerText = "❌ Bundoq bonus kodi mavjud emas yoki muddati o'tgan!";
+      } else if (isClaimed) {
+        promoMsg.style.color = '#f39c12';
+        promoMsg.innerText = "⚠️ Siz bu bonus kodini allaqachon olgansiz! (Faqat 1 marta mumkin)";
+      } else {
+        userBalance += 10;
+        updateBalance();
+        localStorage.setItem('yumi_claimed_' + userCode, 'true');
+        promoMsg.style.color = '#2ecc71';
+        promoMsg.innerText = "🎉 Tabriklaymiz! +10 💎 balansingizga qo'shildi!";
+        document.getElementById('userPromoInput').value = '';
+      }
     }
 
     /* --- 💣 1. BO'MBA O'YINI --- */
@@ -272,12 +354,9 @@
       isRocketFlying = true;
       currentMultiplier = 1.00;
       
-      // Katta tikish bo'lsa maximum limit pasayadi (Tezroq portlaydi)
-      // Maksimal ko'paytiruvchi: 2x - 3x atrofida bo'ladi
       let maxLimit = 3.00 - (betAmountRocket / 100);
-      if (maxLimit < 1.30) maxLimit = 1.30; // Eng past chegarasi x1.30
+      if (maxLimit < 1.30) maxLimit = 1.30;
 
-      // Portlash nuqtasi x1.10 va maxLimit orasida
       crashPoint = parseFloat((1.10 + Math.random() * (maxLimit - 1.10)).toFixed(2));
 
       document.getElementById('launchRocketBtn').style.display = 'none';
@@ -286,7 +365,6 @@
       document.getElementById('rocketStatus').innerText = "🚀 Raketa uchmoqda...";
       document.getElementById('rocketIcon').innerText = "🚀";
 
-      // Tezroq uchishi va tez portlashi uchun interval 60ms qilindi
       rocketInterval = setInterval(() => {
         currentMultiplier += 0.05;
         document.getElementById('rocketMultiplier').innerText = "x" + currentMultiplier.toFixed(2);
