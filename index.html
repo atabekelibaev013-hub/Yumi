@@ -1,501 +1,139 @@
 <!DOCTYPE html>
 <html lang="uz">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Yumi Olmos Games</title>
-  <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <style>
-    body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #181f25; color: #fff; padding: 15px; margin: 0; text-align: center; }
-    .card { background: #232e3c; padding: 15px; border-radius: 12px; margin-bottom: 15px; border: 1px solid #2b394a; box-shadow: 0 4px 10px rgba(0,0,0,0.3); }
-    .admin-card { background: #2c2136; border: 1px solid #8e44ad; }
-    h2 { color: #0088cc; margin-top: 5px; cursor: pointer; user-select: none; }
-    h3 { margin-bottom: 10px; color: #ffd700; }
-    .btn { background: #248bcf; color: white; border: none; padding: 12px; border-radius: 8px; width: 100%; font-size: 15px; font-weight: bold; cursor: pointer; margin-top: 8px; }
-    .btn:active { background: #1a6fa8; transform: scale(0.98); }
-    .btn:disabled { background: #555; cursor: not-allowed; }
-    .bet-input { width: 80%; padding: 8px; border-radius: 8px; border: 1px solid #2b394a; background: #181f25; color: #fff; text-align: center; font-size: 16px; margin-bottom: 8px; }
-    .alert-msg { color: #e74c3c; font-weight: bold; margin-top: 5px; display: none; }
-    
-    /* 💣 10x10 Bomb Grid */
-    .bomb-grid {
-      display: grid;
-      grid-template-columns: repeat(10, 1fr);
-      gap: 3px;
-      max-width: 330px;
-      margin: 12px auto;
-    }
-    .bomb-cell {
-      aspect-ratio: 1;
-      background: #181f25;
-      border: 1px solid #3a4b5c;
-      border-radius: 4px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 11px;
-      font-weight: bold;
-      cursor: pointer;
-      user-select: none;
-    }
-    .bomb-cell.opened-safe { background: #27ae60; border-color: #2ecc71; }
-    .bomb-cell.opened-bomb { background: #c0392b; border-color: #e74c3c; }
-    .status-info { font-size: 14px; font-weight: bold; margin: 10px 0; color: #f1c40f; }
-
-    /* 🚀 Rocket (Crash) Stili */
-    .rocket-display {
-      font-size: 50px;
-      margin: 15px 0;
-      min-height: 75px;
-    }
-    .multiplier-text {
-      font-size: 32px;
-      font-weight: bold;
-      color: #2ecc71;
-    }
-
-    /* 🎰 Slot Machine Stili */
-    .slot-container {
-      display: flex;
-      justify-content: center;
-      gap: 10px;
-      margin: 15px 0;
-    }
-    .slot-reel {
-      width: 70px;
-      height: 80px;
-      background: #181f25;
-      border: 2px solid #ffd700;
-      border-radius: 10px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 40px;
-      box-shadow: inset 0 0 10px #000;
-    }
-  </style>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>Yopish</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<link rel="stylesheet" href="style.css" />
 </head>
 <body>
+<div id="app">
 
-  <!-- Sarlavhani bosib tursangiz Admin Panel ochiladi -->
-  <h2 id="mainHeader" 
-      onmousedown="startHold()" 
-      onmouseup="cancelHold()" 
-      onmouseleave="cancelHold()"
-      ontouchstart="startHold()" 
-      ontouchend="cancelHold()">💎 Yumi Olmos Games</h2>
-
-  <!-- Balans -->
-  <div class="card">
-    <p style="margin:0; color:#aaa;">Sizning balansingiz:</p>
-    <h1 style="margin:5px 0;"><span id="balance">100</span> 💎</h1>
-  </div>
-
-  <!-- 👑 ADMIN PANEL (Faqat ega uchun yashirin menyu) -->
-  <div id="adminPanel" class="card admin-card" style="display: none;">
-    <h3 style="color: #9b59b6;">👑 Ega Menyu (Bonus Kod Qo'yish)</h3>
-    <p style="font-size: 12px; color: #bbb; margin-bottom: 8px;">Yangi kunlik bonus kodini yozing va saqlang:</p>
-    <input type="text" id="newAdminCode" class="bet-input" placeholder="Masalan: 75">
-    <button class="btn" style="background: #8e44ad;" onclick="saveAdminCode()">💾 Kodni Saqlash</button>
-    <div id="adminMsg" style="font-size: 13px; margin-top: 5px; color: #2ecc71;"></div>
-  </div>
-
-  <!-- 🎁 KUNLIK BONUS KOD MENYUSI -->
-  <div class="card">
-    <h3>🎁 Kunlik Bonus Kod</h3>
-    <p style="font-size: 12px; color: #bbb; margin-bottom: 8px;">Kanalda berilgan promo-kodni kiriting va <b>+10 💎</b> oling!</p>
-    <input type="text" id="userPromoInput" class="bet-input" placeholder="Bonus kodni kiriting...">
-    <button class="btn" style="background: #f39c12;" onclick="claimBonusCode()">🎁 Bonusni Olish (+10 💎)</button>
-    <div id="promoMsg" class="status-info" style="display: none; margin-top: 8px;"></div>
-  </div>
-
-  <!-- 💣 BO'MBA O'YINI -->
-  <div class="card">
-    <h3>💣 Bo'mba O'yini (40 ta Bo'mba)</h3>
-    <p style="font-size: 12px; color: #bbb; margin-bottom: 8px;">Har bir toza kletka uchun: <b>+x0.50 olmos</b></p>
-    
-    <input type="number" id="betAmountBomb" class="bet-input" value="10" min="10">
-    <div id="errorAlertBomb" class="alert-msg">❌ Balansingizda olmos yetarli emas!</div>
-
-    <button id="startBombBtn" class="btn" style="background: #e67e22;" onclick="startBombGame()">🎮 O'yinni Boshlash</button>
-
-    <div id="bombGameArea" style="display: none;">
-      <div id="statusInfo" class="status-info">Ochiq: 0 | Yutuq: 0 💎</div>
-      <button id="cashoutBtn" class="btn" style="background: #27ae60; margin-bottom: 10px;" onclick="cashoutBomb()">💰 Yutuqni olish</button>
-      <div id="bombGrid" class="bomb-grid"></div>
+  <!-- Top bar -->
+  <div class="topbar">
+    <div class="topbar-left">Yopish</div>
+    <div class="topbar-stats">
+      <div class="stat-pill">
+        <span class="icon diamond">💎</span><span id="diamondCount">0</span>
+        <span class="add-btn" id="addDiamondBtn">+</span>
+      </div>
+      <div class="stat-pill">
+        <span class="icon coin">🟡</span><span id="coinCount">0</span>
+      </div>
     </div>
   </div>
 
-  <!-- 🚀 ROCKET (CRASH) O'YINI -->
-  <div class="card">
-    <h3>🚀 Yumi Rocket (Crash)</h3>
-    <p style="font-size: 12px; color: #bbb; margin-bottom: 8px;">Ko'p olmos tiksangiz, raketa tezroq portlaydi (x1.10 - x3.00)!</p>
+  <!-- BOSISH (main tap) screen -->
+  <section id="screen-tap" class="screen active">
+    <div class="balance-display">
+      <span class="coin-ico">🟡</span>
+      <span id="tapBalance">0</span>
+    </div>
+    <div class="tap-multiplier" id="tapMultiplier">Tap x1</div>
 
-    <input type="number" id="betAmountRocket" class="bet-input" value="10" min="10">
-    <div id="errorAlertRocket" class="alert-msg">❌ Balansingizda olmos yetarli emas!</div>
-
-    <div class="rocket-display">
-      <div id="rocketIcon">🚀</div>
-      <div id="rocketMultiplier" class="multiplier-text">x1.00</div>
+    <div class="coin-wrap">
+      <button id="coinBtn" class="coin-btn">
+        <span class="coin-letter">Y</span>
+      </button>
     </div>
 
-    <div id="rocketStatus" class="status-info">Uchishga tayyor!</div>
-
-    <button id="launchRocketBtn" class="btn" style="background: #e74c3c;" onclick="launchRocket()">🚀 Uchirish</button>
-    <button id="cashoutRocketBtn" class="btn" style="background: #27ae60; display: none;" onclick="cashoutRocket()">💰 Yutuqni olish</button>
-  </div>
-
-  <!-- 🎰 SLOT MACHINE O'YINI -->
-  <div class="card">
-    <h3>🎰 Yumi Slot</h3>
-    <p style="font-size: 12px; color: #bbb; margin-bottom: 8px;">3x 💎 = x10 | 3x 👑 = x7 | 3x 7️⃣ = x5 | 2x mos = x1.5</p>
-
-    <input type="number" id="betAmountSlot" class="bet-input" value="10" min="10">
-    <div id="errorAlertSlot" class="alert-msg">❌ Balansingizda olmos yetarli emas!</div>
-
-    <div class="slot-container">
-      <div class="slot-reel" id="reel1">💎</div>
-      <div class="slot-reel" id="reel2">👑</div>
-      <div class="slot-reel" id="reel3">7️⃣</div>
+    <div class="tap-actions">
+      <button class="ghost-btn" id="gotoBoost">🎮 GAME</button>
+      <button class="ghost-btn" id="gotoShop">🏪 SHOP</button>
     </div>
 
-    <div id="slotStatus" class="status-info" style="color: #2ecc71;">Omadingizni sinang!</div>
+    <div class="energy-block">
+      <div class="energy-label">
+        <span>⚡ ENERGY</span>
+        <span><span id="energyCur">500</span>/<span id="energyMax">500</span></span>
+      </div>
+      <div class="energy-bar"><div class="energy-fill" id="energyFill"></div></div>
+    </div>
+  </section>
 
-    <button id="spinBtn" class="btn" style="background: #9b59b6;" onclick="spinSlot()">🎰 Aylantirish</button>
-  </div>
+  <!-- BOOST / SHOP screen -->
+  <section id="screen-boost" class="screen">
+    <div class="panel">
+      <div class="panel-header">
+        <div>
+          <div class="panel-title">MINE COIN DO'KON</div>
+          <div class="panel-sub">Olmos bilan xarid qiling</div>
+        </div>
+      </div>
 
-  <script>
-    const tg = window.Telegram.WebApp;
-    tg.expand();
+      <div class="boost-card">
+        <div class="boost-card-left">
+          <div class="boost-card-title">⚡ MINE BOOST</div>
+          <div class="boost-card-name">Kunlik limitni to'ldirish</div>
+          <div class="boost-card-desc">500 energiyani diamond orqali qayta oling.</div>
+        </div>
+        <div class="boost-card-right">
+          <div class="hozir-label">HOZIR</div>
+          <div class="hozir-val" id="hozirVal">500/500</div>
+        </div>
+      </div>
+      <button class="limit-btn" id="refillBtn">💎 LIMIT TO'LIQ</button>
 
-    // Har bir Telegram akkaunti uchun alohida ID olish (aks holda bir xil telefonda 2-akkaunt bloklanib qolayotgan edi)
-    const userId = (tg.initDataUnsafe && tg.initDataUnsafe.user && tg.initDataUnsafe.user.id) 
-      ? tg.initDataUnsafe.user.id 
-      : 'guest_user';
+      <div class="char-grid" id="charGrid"></div>
+    </div>
+  </section>
 
-    // Har bir akkaunt uchun balansni alohida saqlash
-    let savedBalance = localStorage.getItem('yumi_user_balance_' + userId);
-    let userBalance = (savedBalance !== null && !isNaN(savedBalance)) 
-      ? parseInt(savedBalance) 
-      : 100;
+  <!-- VAZIFALAR screen -->
+  <section id="screen-tasks" class="screen">
+    <div class="daily-box">
+      <div class="daily-label">KUNLIK BONUS KODINGIZ</div>
+      <div class="daily-row">
+        <div class="daily-code" id="dailyCode">--------</div>
+        <button class="mini-btn" id="dailyClaimBtn">▶ Ishlatish</button>
+      </div>
+      <div class="daily-meta">
+        <span>KEYINGI CLAIM: <b id="dailyStatus">Tayyor</b></span>
+      </div>
+    </div>
 
-    function updateBalance() {
-      document.getElementById('balance').innerText = userBalance;
-      localStorage.setItem('yumi_user_balance_' + userId, userBalance);
-    }
+    <div class="tasks-header">
+      <span>Vazifalar <span class="badge" id="taskCount">0</span></span>
+    </div>
+    <div class="task-list" id="taskList"></div>
+  </section>
 
-    updateBalance();
+  <!-- AUKSION screen -->
+  <section id="screen-auction" class="screen">
+    <div class="tabs2">
+      <button class="tab2-btn active" data-status="active">FAOL</button>
+      <button class="tab2-btn" data-status="ended">TUGAGAN</button>
+    </div>
+    <div class="auction-list" id="auctionList"></div>
+  </section>
 
-    /* --- 👑 ADMIN PANEL (BOSIB TURGANDA OCHILISHI) --- */
-    let holdTimer;
+  <!-- PROFIL screen -->
+  <section id="screen-profile" class="screen">
+    <div class="profile-card">
+      <div class="profile-avatar">🙂</div>
+      <div class="profile-name" id="profileName">Foydalanuvchi</div>
+      <div class="profile-stats">
+        <div class="profile-stat"><span id="profBalance">0</span><small>Tanga</small></div>
+        <div class="profile-stat"><span id="profDiamonds">0</span><small>Olmos</small></div>
+      </div>
+      <div class="ref-box">
+        <div class="daily-label">SIZNING REFERAL KODINGIZ</div>
+        <div class="daily-code" id="refCode">--------</div>
+        <button class="mini-btn" id="copyRefBtn">Nusxalash</button>
+      </div>
+    </div>
+  </section>
 
-    function startHold() {
-      holdTimer = setTimeout(() => {
-        const adminPanel = document.getElementById('adminPanel');
-        adminPanel.style.display = adminPanel.style.display === 'none' ? 'block' : 'none';
-      }, 3000); // Sarlavhani 3 soniya bosib tursangiz Ega Menyusi ochiladi
-    }
+  <!-- Bottom nav -->
+  <nav class="bottom-nav">
+    <button class="nav-btn" data-screen="screen-boost"><span>🚀</span>BOOST</button>
+    <button class="nav-btn" data-screen="screen-tasks"><span>✅</span>VAZIFALAR</button>
+    <button class="nav-btn active" data-screen="screen-tap"><span>🎯</span>BOSISH</button>
+    <button class="nav-btn" data-screen="screen-auction"><span>⚖️</span>AUKSION</button>
+    <button class="nav-btn" data-screen="screen-profile"><span>👤</span>PROFIL</button>
+  </nav>
 
-    function cancelHold() {
-      clearTimeout(holdTimer);
-    }
-
-    function saveAdminCode() {
-      const newCode = document.getElementById('newAdminCode').value.trim().toUpperCase();
-      if (!newCode) {
-        alert("Iltimos, yangi bonus kodini kiriting!");
-        return;
-      }
-      localStorage.setItem('yumi_active_bonus_code', newCode);
-      document.getElementById('adminMsg').innerText = `✅ Yangi bonus kodi saqlandi: "${newCode}"`;
-      document.getElementById('newAdminCode').value = '';
-    }
-
-    function claimBonusCode() {
-      const userCode = document.getElementById('userPromoInput').value.trim().toUpperCase();
-      const promoMsg = document.getElementById('promoMsg');
-      promoMsg.style.display = 'block';
-
-      if (!userCode) {
-        promoMsg.style.color = '#e74c3c';
-        promoMsg.innerText = "❌ Iltimos, bonus kodini kiriting!";
-        return;
-      }
-
-      const currentActiveCode = localStorage.getItem('yumi_active_bonus_code') || '75';
-      
-      // Bonus kod har bir Telegram ID (akkaunt) uchun ALOHIDA tekshiriladi!
-      const isClaimedForThisUser = localStorage.getItem('yumi_claimed_' + userId + '_' + userCode);
-
-      if (userCode !== currentActiveCode) {
-        promoMsg.style.color = '#e74c3c';
-        promoMsg.innerText = "❌ Bundoq bonus kodi mavjud emas yoki muddati o'tgan!";
-      } else if (isClaimedForThisUser) {
-        promoMsg.style.color = '#f39c12';
-        promoMsg.innerText = "⚠️ Siz bu bonus kodini allaqachon olgansiz! (Faqat 1 marta mumkin)";
-      } else {
-        userBalance += 10;
-        updateBalance();
-        // Ushbu Telegram foydalanuvchisi ushbu kodni olganini saqlaymiz
-        localStorage.setItem('yumi_claimed_' + userId + '_' + userCode, 'true');
-        promoMsg.style.color = '#2ecc71';
-        promoMsg.innerText = "🎉 Tabriklaymiz! +10 💎 balansingizga qo'shildi!";
-        document.getElementById('userPromoInput').value = '';
-      }
-    }
-
-    /* --- 💣 1. BO'MBA O'YINI --- */
-    let bombs = [];
-    let isBombGameActive = false;
-    let currentBetBomb = 10;
-    let currentProfitBomb = 0;
-    let openedCountBomb = 0;
-
-    function startBombGame() {
-      const betInput = document.getElementById('betAmountBomb');
-      const errorAlert = document.getElementById('errorAlertBomb');
-      currentBetBomb = parseInt(betInput.value) || 10;
-
-      if (currentBetBomb < 10) { alert("Minimal tikish miqdori 10 💎"); return; }
-      if (userBalance < currentBetBomb) { errorAlert.style.display = 'block'; return; } 
-      else { errorAlert.style.display = 'none'; }
-
-      userBalance -= currentBetBomb;
-      updateBalance();
-
-      bombs = [];
-      while (bombs.length < 40) {
-        let r = Math.floor(Math.random() * 100);
-        if (!bombs.includes(r)) bombs.push(r);
-      }
-
-      isBombGameActive = true;
-      currentProfitBomb = 0;
-      openedCountBomb = 0;
-
-      const grid = document.getElementById('bombGrid');
-      grid.innerHTML = '';
-      for (let i = 0; i < 100; i++) {
-        const cell = document.createElement('div');
-        cell.className = 'bomb-cell';
-        cell.id = 'cell-' + i;
-        cell.innerText = '❓';
-        cell.onclick = () => clickCell(i);
-        grid.appendChild(cell);
-      }
-
-      document.getElementById('startBombBtn').style.display = 'none';
-      document.getElementById('bombGameArea').style.display = 'block';
-      document.getElementById('cashoutBtn').style.display = 'block';
-      updateBombStatus();
-    }
-
-    function clickCell(index) {
-      if (!isBombGameActive) return;
-      const cell = document.getElementById('cell-' + index);
-      if (cell.classList.contains('opened-safe') || cell.classList.contains('opened-bomb')) return;
-
-      if (bombs.includes(index)) {
-        cell.classList.add('opened-bomb');
-        cell.innerText = '💣';
-        endBombGame(false);
-      } else {
-        cell.classList.add('opened-safe');
-        cell.innerText = '💎';
-        openedCountBomb++;
-        currentProfitBomb += currentBetBomb * 0.50;
-        updateBombStatus();
-      }
-    }
-
-    function updateBombStatus() {
-      const totalWin = currentBetBomb + currentProfitBomb;
-      document.getElementById('statusInfo').innerText = `Ochiq: ${openedCountBomb} | Yutuq: ${totalWin.toFixed(1)} 💎`;
-      document.getElementById('cashoutBtn').innerText = `💰 Yutuqni olish (${totalWin.toFixed(1)} 💎)`;
-    }
-
-    function cashoutBomb() {
-      if (!isBombGameActive) return;
-      const totalWin = Math.floor(currentBetBomb + currentProfitBomb);
-      userBalance += totalWin;
-      updateBalance();
-      alert(`🎉 Tabriklaymiz! ${totalWin} 💎 balansga qo'shildi!`);
-      endBombGame(true);
-    }
-
-    function endBombGame(isWin) {
-      isBombGameActive = false;
-      for (let i = 0; i < 100; i++) {
-        const cell = document.getElementById('cell-' + i);
-        if (bombs.includes(i)) {
-          cell.classList.add('opened-bomb');
-          cell.innerText = '💣';
-        }
-      }
-      document.getElementById('cashoutBtn').style.display = 'none';
-      if (!isWin) {
-        document.getElementById('statusInfo').innerText = "💥 Bo'mbaga tushdingiz! Yutqazdingiz.";
-      } else {
-        document.getElementById('statusInfo').innerText = "✅ Yutuq saqlandi!";
-      }
-      setTimeout(() => {
-        document.getElementById('startBombBtn').style.display = 'block';
-      }, 3000);
-    }
-
-    /* --- 🚀 2. ROCKET (CRASH) O'YINI --- */
-    let rocketInterval = null;
-    let currentMultiplier = 1.00;
-    let crashPoint = 1.00;
-    let betAmountRocket = 10;
-    let isRocketFlying = false;
-
-    function launchRocket() {
-      if (isRocketFlying) return;
-
-      const betInput = document.getElementById('betAmountRocket');
-      const errorAlert = document.getElementById('errorAlertRocket');
-      betAmountRocket = parseInt(betInput.value) || 10;
-
-      if (betAmountRocket < 10) { alert("Minimal tikish miqdori 10 💎"); return; }
-      if (userBalance < betAmountRocket) { errorAlert.style.display = 'block'; return; }
-      else { errorAlert.style.display = 'none'; }
-
-      userBalance -= betAmountRocket;
-      updateBalance();
-
-      isRocketFlying = true;
-      currentMultiplier = 1.00;
-      
-      let maxLimit = 3.00 - (betAmountRocket / 100);
-      if (maxLimit < 1.30) maxLimit = 1.30;
-
-      crashPoint = parseFloat((1.10 + Math.random() * (maxLimit - 1.10)).toFixed(2));
-
-      document.getElementById('launchRocketBtn').style.display = 'none';
-      document.getElementById('cashoutRocketBtn').style.display = 'block';
-      document.getElementById('rocketStatus').style.color = '#f1c40f';
-      document.getElementById('rocketStatus').innerText = "🚀 Raketa uchmoqda...";
-      document.getElementById('rocketIcon').innerText = "🚀";
-
-      rocketInterval = setInterval(() => {
-        currentMultiplier += 0.05;
-        document.getElementById('rocketMultiplier').innerText = "x" + currentMultiplier.toFixed(2);
-        document.getElementById('cashoutRocketBtn').innerText = `💰 Yutuqni olish (${Math.floor(betAmountRocket * currentMultiplier)} 💎)`;
-
-        if (currentMultiplier >= crashPoint) {
-          crashRocket();
-        }
-      }, 60);
-    }
-
-    function cashoutRocket() {
-      if (!isRocketFlying) return;
-      clearInterval(rocketInterval);
-      isRocketFlying = false;
-
-      const winAmount = Math.floor(betAmountRocket * currentMultiplier);
-      userBalance += winAmount;
-      updateBalance();
-
-      document.getElementById('rocketStatus').style.color = '#2ecc71';
-      document.getElementById('rocketStatus').innerText = `🎉 Yutuq olindi: +${winAmount} 💎 (x${currentMultiplier.toFixed(2)})`;
-      resetRocketUI();
-    }
-
-    function crashRocket() {
-      clearInterval(rocketInterval);
-      isRocketFlying = false;
-
-      document.getElementById('rocketIcon').innerText = "💥";
-      document.getElementById('rocketStatus').style.color = '#e74c3c';
-      document.getElementById('rocketStatus').innerText = `💥 PORTLADI! (x${crashPoint.toFixed(2)} da stop bo'ldi)`;
-      resetRocketUI();
-    }
-
-    function resetRocketUI() {
-      document.getElementById('cashoutRocketBtn').style.display = 'none';
-      setTimeout(() => {
-        document.getElementById('launchRocketBtn').style.display = 'block';
-        document.getElementById('rocketIcon').innerText = "🚀";
-        document.getElementById('rocketMultiplier').innerText = "x1.00";
-      }, 3000);
-    }
-
-    /* --- 🎰 3. SLOT MACHINE --- */
-    const slotItems = ['💎', '👑', '7️⃣', '⭐', '🔔', '🍋'];
-    let isSpinning = false;
-
-    function spinSlot() {
-      if (isSpinning) return;
-
-      const betInput = document.getElementById('betAmountSlot');
-      const errorAlert = document.getElementById('errorAlertSlot');
-      const betAmount = parseInt(betInput.value) || 10;
-
-      if (betAmount < 10) { alert("Minimal tikish miqdori 10 💎"); return; }
-      if (userBalance < betAmount) { errorAlert.style.display = 'block'; return; } 
-      else { errorAlert.style.display = 'none'; }
-
-      userBalance -= betAmount;
-      updateBalance();
-      isSpinning = true;
-
-      const spinBtn = document.getElementById('spinBtn');
-      spinBtn.disabled = true;
-      document.getElementById('slotStatus').innerText = "🎰 Aylantirilmoqda...";
-
-      let count = 0;
-      const interval = setInterval(() => {
-        document.getElementById('reel1').innerText = slotItems[Math.floor(Math.random() * slotItems.length)];
-        document.getElementById('reel2').innerText = slotItems[Math.floor(Math.random() * slotItems.length)];
-        document.getElementById('reel3').innerText = slotItems[Math.floor(Math.random() * slotItems.length)];
-        count++;
-
-        if (count > 20) {
-          clearInterval(interval);
-          finalizeSpin(betAmount);
-        }
-      }, 80);
-    }
-
-    function finalizeSpin(bet) {
-      const res1 = slotItems[Math.floor(Math.random() * slotItems.length)];
-      const res2 = slotItems[Math.floor(Math.random() * slotItems.length)];
-      const res3 = slotItems[Math.floor(Math.random() * slotItems.length)];
-
-      document.getElementById('reel1').innerText = res1;
-      document.getElementById('reel2').innerText = res2;
-      document.getElementById('reel3').innerText = res3;
-
-      const status = document.getElementById('slotStatus');
-      let winAmount = 0;
-
-      if (res1 === res2 && res2 === res3) {
-        if (res1 === '💎') winAmount = bet * 10;
-        else if (res1 === '👑') winAmount = bet * 7;
-        else if (res1 === '7️⃣') winAmount = bet * 5;
-        else winAmount = bet * 3;
-
-        status.style.color = '#2ecc71';
-        status.innerText = `🎉 DAHSHAT YUTUQ! +${winAmount} 💎`;
-      } else if (res1 === res2 || res2 === res3 || res1 === res3) {
-        winAmount = Math.floor(bet * 1.5);
-        status.style.color = '#f1c40f';
-        status.innerText = `✨ Kichik yutuq! +${winAmount} 💎`;
-      } else {
-        status.style.color = '#e74c3c';
-        status.innerText = `❌ Omad kelmadi (-${bet} 💎)`;
-      }
-
-      if (winAmount > 0) {
-        userBalance += winAmount;
-        updateBalance();
-      }
-
-      isSpinning = false;
-      document.getElementById('spinBtn').disabled = false;
-    }
-  </script>
+</div>
+<script src="app.js"></script>
 </body>
 </html>

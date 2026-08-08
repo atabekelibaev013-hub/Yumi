@@ -1,0 +1,18 @@
+{
+  "name": "yopish-clone",
+  "version": "1.0.0",
+  "description": "Tap-to-earn Telegram Mini App bot (Yopish uslubida)",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "bot": "node bot.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "node-telegram-bot-api": "^0.66.0",
+    "nanoid": "^3.3.7"
+  }
+}
