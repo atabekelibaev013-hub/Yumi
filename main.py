@@ -24,27 +24,40 @@ DARKO_API_KEY = "yc_live_5286afa187f7b3d0a172d0e6c3e0e829cc65a48faf7b2748"
 DB_NAME = "bot_database.db"
 CHANNELS = ["@Minecoine_kanal"]
 
-# Database yaratish va yangilash
+# Database yaratish va strukturani yangilash
 def init_db():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
+    # Foydalanuvchilar jadvali
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
             full_name TEXT,
+            username TEXT,
             phone TEXT,
             referrer_id INTEGER,
             balance INTEGER DEFAULT 0,
             total_referrals INTEGER DEFAULT 0,
             today_referrals INTEGER DEFAULT 0,
             last_ref_date TEXT,
-            bonus_given INTEGER DEFAULT 0
+            bonus_given INTEGER DEFAULT 0,
+            is_banned INTEGER DEFAULT 0
+        )
+    ''')
+    # Yechib olish so'rovlari jadvali
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS withdrawals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            amount INTEGER,
+            yumi_code TEXT,
+            status TEXT DEFAULT 'pending'
         )
     ''')
     conn.commit()
     conn.close()
 
-def get_or_create_user(user_id: int, full_name: str, referrer_id: int = None):
+def get_or_create_user(user_id: int, full_name: str, username: str = None, referrer_id: int = None):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     today_str = str(date.today())
@@ -54,10 +67,27 @@ def get_or_create_user(user_id: int, full_name: str, referrer_id: int = None):
     
     if not user:
         cursor.execute(
-            "INSERT INTO users (user_id, full_name, referrer_id, balance, total_referrals, today_referrals, last_ref_date, bonus_given) VALUES (?, ?, ?, 0, 0, 0, ?, 0)",
-            (user_id, full_name, referrer_id, today_str)
+            "INSERT INTO users (user_id, full_name, username, referrer_id, balance, total_referrals, today_referrals, last_ref_date, bonus_given, is_banned) VALUES (?, ?, ?, ?, 0, 0, 0, ?, 0, 0)",
+            (user_id, full_name, username, referrer_id, today_str)
         )
-        conn.commit()
+    else:
+        cursor.execute("UPDATE users SET full_name = ?, username = ? WHERE user_id = ?", (full_name, username, user_id))
+    conn.commit()
+    conn.close()
+
+def is_user_banned(user_id: int) -> bool:
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT is_banned FROM users WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return bool(row and row[0] == 1)
+
+def ban_user_db(user_id: int):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET is_banned = 1 WHERE user_id = ?", (user_id,))
+    conn.commit()
     conn.close()
 
 def get_user_stats(user_id: int):
@@ -79,6 +109,13 @@ def get_user_stats(user_id: int):
     conn.close()
     return 0, 0, 0
 
+def add_balance(user_id: int, amount: int):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, user_id))
+    conn.commit()
+    conn.close()
+
 def deduct_balance(user_id: int, amount: int):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
@@ -86,10 +123,34 @@ def deduct_balance(user_id: int, amount: int):
     conn.commit()
     conn.close()
 
+def create_withdrawal(user_id: int, amount: int, yumi_code: str) -> int:
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO withdrawals (user_id, amount, yumi_code) VALUES (?, ?, ?)", (user_id, amount, yumi_code))
+    req_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return req_id
+
+def get_withdrawal(req_id: int):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id, amount, yumi_code, status FROM withdrawals WHERE id = ?", (req_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return row
+
+def update_withdrawal_status(req_id: int, status: str):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE withdrawals SET status = ? WHERE id = ?", (status, req_id))
+    conn.commit()
+    conn.close()
+
 def get_top_referrers():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    cursor.execute("SELECT full_name, total_referrals FROM users ORDER BY total_referrals DESC LIMIT 10")
+    cursor.execute("SELECT full_name, total_referrals FROM users WHERE is_banned = 0 ORDER BY total_referrals DESC LIMIT 10")
     rows = cursor.fetchall()
     conn.close()
     return rows
@@ -112,6 +173,19 @@ def get_sub_keyboard():
         ch_url = ch.replace("@", "https://t.me/")
         buttons.append([InlineKeyboardButton(text="📢 Kanalga obuna bo'lish", url=ch_url)])
     buttons.append([InlineKeyboardButton(text="✅ Tekshirish", callback_data="check_sub")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+# Admin uchun Tasdiqlash / Rad etish / Ban berish tugmalari
+def get_admin_withdraw_keyboard(req_id: int, user_id: int):
+    buttons = [
+        [
+            InlineKeyboardButton(text="✅ Tasdiqlash", callback_data=f"wd_app:{req_id}"),
+            InlineKeyboardButton(text="❌ Rad etish", callback_data=f"wd_rej:{req_id}")
+        ],
+        [
+            InlineKeyboardButton(text="🚫 Ban berish", callback_data=f"ban_usr:{user_id}")
+        ]
+    ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 # Darko API orqali olmos yuborish
@@ -166,12 +240,17 @@ async def start_cmd(message: types.Message, command: CommandObject, state: FSMCo
     await state.clear()
     user_id = message.from_user.id
     full_name = message.from_user.full_name
+    username = message.from_user.username
     
+    if is_user_banned(user_id):
+        await message.answer("Siz botdan foydalanishdan bloklangansiz ❌")
+        return
+
     referrer_id = None
     if command.args and command.args.isdigit():
         referrer_id = int(command.args)
         
-    get_or_create_user(user_id, full_name, referrer_id)
+    get_or_create_user(user_id, full_name, username, referrer_id)
 
     if not await check_subscription(bot, user_id):
         await message.answer(
@@ -196,9 +275,13 @@ async def start_cmd(message: types.Message, command: CommandObject, state: FSMCo
         return
 
     await message.answer("Siz asosiy menyudasiz🖥️", reply_markup=main_menu)
-    # Foydalanuvchi kirish huquqini tekshirish uchun yordamchi funksiya
+    # Foydalanuvchi kirish huquqini va ban holatini tekshirish
 async def ensure_access(message: types.Message, state: FSMContext) -> bool:
     user_id = message.from_user.id
+    if is_user_banned(user_id):
+        await message.answer("Siz botdan foydalanishdan bloklangansiz ❌")
+        return False
+
     if not await check_subscription(bot, user_id):
         await message.answer("Botdan foydalanishdan oldin majburiy kanalga obuna boʻling ❗", reply_markup=get_sub_keyboard())
         return False
@@ -219,6 +302,10 @@ async def ensure_access(message: types.Message, state: FSMContext) -> bool:
 @dp.callback_query(F.data == "check_sub")
 async def check_sub_callback(call: types.CallbackQuery, state: FSMContext):
     user_id = call.from_user.id
+    if is_user_banned(user_id):
+        await call.answer("Siz bloklangansiz ❌", show_alert=True)
+        return
+
     if await check_subscription(bot, user_id):
         await call.message.delete()
         
@@ -243,6 +330,10 @@ async def check_sub_callback(call: types.CallbackQuery, state: FSMContext):
 @dp.message(PhoneState.waiting_for_phone, F.contact)
 async def receive_phone(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
+    if is_user_banned(user_id):
+        await message.answer("Siz bloklangansiz ❌")
+        return
+
     phone = message.contact.phone_number
     
     conn = sqlite3.connect(DB_NAME)
@@ -368,7 +459,7 @@ async def process_withdraw_amount(message: types.Message, state: FSMContext):
     await state.set_state(WithdrawState.waiting_for_code)
     await message.answer("yumicoin kodingizni yozib yuboring")
 
-# Yumicoin kodini qabul qilish va avtomatik yuborish
+# Yumicoin kodini qabul qilish va Adminga so'rov yuborish
 @dp.message(WithdrawState.waiting_for_code)
 async def process_withdraw_code(message: types.Message, state: FSMContext):
     if not await ensure_access(message, state):
@@ -379,27 +470,114 @@ async def process_withdraw_code(message: types.Message, state: FSMContext):
     amount = user_data.get("withdraw_amount")
     yumi_code = message.text.strip()
     user_id = message.from_user.id
+    username = message.from_user.username
+    
+    # Telefon raqamni olish
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT phone FROM users WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    conn.close()
+    phone = row[0] if row else "Yo'q"
 
-    msg = await message.answer("⏳ Darko API orqali olmos yuborilmoqda, kuting...")
+    # Balansdan olmosni vaqtincha ayirish va so'rovni saqlash
+    deduct_balance(user_id, amount)
+    req_id = create_withdrawal(user_id, amount, yumi_code)
+    
+    await state.clear()
+    await message.answer("✅ So'rovingiz adminga yuborildi! Tasdiqlanishini kuting ⏳")
 
+    # Adminga xabar shakllantirish
+    uname_str = f"@{username}" if username else "Mavjud emas"
+    admin_msg = (
+        f"📥 <b>Yangi olmos yechish so'rovi! (#ID{req_id})</b>\n\n"
+        f"👤 {uname_str}\n"
+        f"🆔 ID: <code>{user_id}</code>\n"
+        f"📱 Nomeri: <code>{phone}</code>\n"
+        f"💎 Olmos yechmoqchi: <b>{amount}</b>\n"
+        f"🔑 Kodi: <code>{yumi_code}</code>"
+    )
+
+    await bot.send_message(
+        ADMIN_ID,
+        admin_msg,
+        parse_mode="HTML",
+        reply_markup=get_admin_withdraw_keyboard(req_id, user_id)
+    )
+
+# --- ADMIN CALLBACK HANDLERLARI (Tasdiqlash, Rad etish, Ban) ---
+
+# Tasdiqlash
+@dp.callback_query(F.data.startswith("wd_app:"))
+async def approve_withdrawal(call: types.CallbackQuery):
+    req_id = int(call.data.split(":")[1])
+    wd_data = get_withdrawal(req_id)
+
+    if not wd_data:
+        await call.answer("So'rov topilmadi!", show_alert=True)
+        return
+
+    user_id, amount, yumi_code, status = wd_data
+
+    if status != "pending":
+        await call.answer("Bu so'rov allaqachon ko'rib chiqilgan!", show_alert=True)
+        return
+
+    await call.message.edit_text(call.message.text + "\n\n⏳ Darko API orqali yuborilmoqda...")
+
+    # API orqali olmos yuborish
     success, api_msg = await send_darko_diamonds(yumi_code, amount)
 
     if success:
-        deduct_balance(user_id, amount)
-        await state.clear()
-        await msg.edit_text(f"✅ Yumicoin hisobingizga {amount} olmos avtomatik tashlab berildi!")
-
-        admin_msg = (
-            f"⚡️ <b>Avto-yechish muvaffaqiyatli bajarildi!</b>\n\n"
-            f"👤 <b>Foydalanuvchi:</b> {message.from_user.full_name} (@{message.from_user.username})\n"
-            f"🆔 <b>ID:</b> <code>{user_id}</code>\n"
-            f"💎 <b>Miqdori:</b> {amount} olmos\n"
-            f"🔑 <b>YumiCoin kodi:</b> <code>{yumi_code}</code>"
-        )
-        await bot.send_message(ADMIN_ID, admin_msg, parse_mode="HTML")
+        update_withdrawal_status(req_id, "approved")
+        await call.message.edit_text(call.message.text.replace("⏳ Darko API orqali yuborilmoqda...", "") + "\n\n✅ <b>TASDIQLANDI</b> (Olmos yuborildi)")
+        try:
+            await bot.send_message(user_id, f"✅ So'rovingiz tasdiqlandi! Yumicoin hisobingizga <b>{amount} olmos</b> o'tkazib berildi!", parse_mode="HTML")
+        except Exception:
+            pass
     else:
-        await state.clear()
-        await msg.edit_text(f"❌ Olmos o'tkazishda xatolik yuz berdi: {api_msg}\nBalansizdan olmos ayrilmadi.")
+        # API xato bersa olmosni foydalanuvchiga qaytarish
+        add_balance(user_id, amount)
+        update_withdrawal_status(req_id, "failed")
+        await call.message.edit_text(call.message.text.replace("⏳ Darko API orqali yuborilmoqda...", "") + f"\n\n❌ <b>API XATOLIK:</b> {api_msg}\n(Olmos qaytarildi)")
+
+# Rad etish
+@dp.callback_query(F.data.startswith("wd_rej:"))
+async def reject_withdrawal(call: types.CallbackQuery):
+    req_id = int(call.data.split(":")[1])
+    wd_data = get_withdrawal(req_id)
+
+    if not wd_data:
+        await call.answer("So'rov topilmadi!", show_alert=True)
+        return
+
+    user_id, amount, yumi_code, status = wd_data
+
+    if status != "pending":
+        await call.answer("Bu so'rov allaqachon ko'rib chiqilgan!", show_alert=True)
+        return
+
+    # Olmosni balansga qaytarish
+    add_balance(user_id, amount)
+    update_withdrawal_status(req_id, "rejected")
+
+    await call.message.edit_text(call.message.text + "\n\n❌ <b>RAD ETILDI</b> (Olmos balansga qaytarildi)")
+    try:
+        await bot.send_message(user_id, f"❌ So'rovingiz rad etildi! <b>{amount} olmos</b> balansizga qaytarildi.", parse_mode="HTML")
+    except Exception:
+        pass
+
+# Ban berish
+@dp.callback_query(F.data.startswith("ban_usr:"))
+async def ban_user_callback(call: types.CallbackQuery):
+    target_user_id = int(call.data.split(":")[1])
+    ban_user_db(target_user_id)
+    await call.answer("Foydalanuvchi bloklandi! 🚫", show_alert=True)
+    await call.message.edit_text(call.message.text + f"\n\n🚫 <b>FOYDALANUVCHI BLOKLANDI (ID: {target_user_id})</b>")
+    try:
+        await bot.send_message(target_user_id, "Siz botdan foydalanishdan bloklandingiz ❌")
+    except Exception:
+        pass
 
 # /top buyrug'i
 @dp.message(Command("top"))
@@ -467,7 +645,7 @@ async def admin_reply(message: types.Message):
             )
             await message.reply("✅ Javobingiz foydalanuvchiga yuborildi!")
         except Exception as e:
-            await message.reply(f"❌ Xabarni yuborib bo'mladi: {e}")
+            await message.reply(f"❌ Xabarni yuborib bo'lmadi: {e}")
 
 # Render serveri uchun veb-server
 async def handle(request):
