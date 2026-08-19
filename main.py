@@ -13,7 +13,7 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from aiohttp import web
 
 BOT_TOKEN = "8825351774:AAFI7D9WaBz3fcMV5fClnWCrOmWuLJqn0ug"
-ADMIN_ID = 7803078084  # Sizning Telegram ID raqamingiz
+ADMIN_ID = 7803078084
 DARKO_API_KEY = "yc_live_5286afa187f7b3d0a172d0e6c3e0e829cc65a48faf7b2748"
 
 DB_NAME = "bot_database.db"
@@ -137,7 +137,7 @@ class WithdrawState(StatesGroup):
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# Asosiy menyu (Balans 💎 tugmasi o'rtaga joylashtirildi)
+# Asosiy menyu
 main_menu = ReplyKeyboardMarkup(
     keyboard=[
         [
@@ -145,7 +145,7 @@ main_menu = ReplyKeyboardMarkup(
             KeyboardButton(text="Balans 💎"),
             KeyboardButton(text="Olmos yechish 💎")
         ],
-        [KeyboardButton(text="Murojaat ☎️")]
+        [KeyboardButton(text="🔴 Murojaat ☎️")]
     ],
     resize_keyboard=True
 )
@@ -289,8 +289,8 @@ async def top_handler(message: types.Message):
         
     await message.answer(text, parse_mode="HTML")
 
-# "Murojaat ☎️"
-@dp.message(F.text == "Murojaat ☎️")
+# "🔴 Murojaat ☎️"
+@dp.message(F.text.in_(["🔴 Murojaat ☎️", "Murojaat ☎️"]))
 async def murojaat_button(message: types.Message, state: FSMContext):
     await state.set_state(MurojaatState.waiting_for_text)
     await message.answer("Murojaatingizni yozib yuboring ❗")
@@ -351,4 +351,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-    
+        
