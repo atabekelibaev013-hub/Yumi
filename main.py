@@ -383,3 +383,116 @@ async def process_withdraw_code(message: types.Message, state: FSMContext):
     await state.clear()
     await message.answer("✅ So'rov adminga yuborildi!")
     # Adminga yuborish (bu qism 4-qismda tugallanadi)
+# --- ADMIN PANEL VA CALLBACK HANDLERLAR ---
+
+@dp.message(F.text == "👨‍💻 Admin Panel")
+async def admin_panel(message: types.Message):
+    if message.from_user.id == ADMIN_ID:
+        await message.answer("Admin panelga xush kelibsiz!", reply_markup=admin_menu)
+
+@dp.message(F.text == "⬅️ Bosh menyu")
+async def back_to_main(message: types.Message):
+    await message.answer("Asosiy menyu:", reply_markup=get_main_menu(message.from_user.id))
+
+@dp.message(F.text == "💰 Hisob")
+async def ask_for_user(message: types.Message, state: FSMContext):
+    if message.from_user.id == ADMIN_ID:
+        await state.set_state(AdminPanelState.waiting_for_identifier)
+        await message.answer("Foydalanuvchi ID yoki @username ni yuboring:")
+
+@dp.message(AdminPanelState.waiting_for_identifier)
+async def process_user_search(message: types.Message, state: FSMContext):
+    user_info = get_user_by_id_or_username(message.text)
+    if not user_info:
+        await message.answer("❌ Foydalanuvchi topilmadi.")
+        return
+    uid, name, uname, phone, bal = user_info
+    text = f"👤 ID: {uid}\n📛 Ism: {name}\n💎 Balans: {bal} ta"
+    await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✏️ O'zgartirish", callback_data=f"edit_bal:{uid}")]
+    ]))
+    await state.clear()
+
+@dp.callback_query(F.data.startswith("edit_bal:"))
+async def edit_balance_prompt(callback: types.CallbackQuery, state: FSMContext):
+    uid = int(callback.data.split(":")[1])
+    await state.update_data(target_user_id=uid)
+    await state.set_state(AdminPanelState.waiting_for_new_balance)
+    await callback.message.answer("Yangi balans miqdorini kiriting:")
+
+@dp.message(AdminPanelState.waiting_for_new_balance)
+async def process_new_balance(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    set_user_balance(data["target_user_id"], int(message.text))
+    await state.clear()
+    await message.answer("✅ Balans yangilandi!")
+
+# --- TO'LOVNI TASDIQLASH/RAD ETISH ---
+
+@dp.callback_query(F.data.startswith("wd_app:"))
+async def approve_wd(call: types.CallbackQuery):
+    req_id = int(call.data.split(":")[1])
+    data = get_withdrawal(req_id)
+    if not data or data[3] != "pending": return
+    
+    await call.message.edit_text(call.message.text + "\n\n⏳ API orqali yuborilmoqda...")
+    success, msg = await send_darko_diamonds(data[2], data[1])
+    
+    if success:
+        update_withdrawal_status(req_id, "approved")
+        await call.message.edit_text(call.message.text.replace("⏳ API orqali yuborilmoqda...", "") + "\n\n✅ TASDIQLANDI")
+        try: await bot.send_message(data[0], "✅ To'lovingiz tasdiqlandi!")
+        except: pass
+    else:
+        add_balance(data[0], data[1])
+        await call.message.edit_text(f"❌ API Xatolik: {msg}")
+
+@dp.callback_query(F.data.startswith("wd_rej:"))
+async def reject_wd(call: types.CallbackQuery):
+    req_id = int(call.data.split(":")[1])
+    data = get_withdrawal(req_id)
+    if not data or data[3] != "pending": return
+    add_balance(data[0], data[1])
+    update_withdrawal_status(req_id, "rejected")
+    await call.message.edit_text(call.message.text + "\n\n❌ RAD ETILDI")
+
+@dp.callback_query(F.data.startswith("ban_usr:"))
+async def ban_user(call: types.CallbackQuery):
+    ban_user_db(int(call.data.split(":")[1]))
+    await call.answer("Foydalanuvchi bloklandi!")
+
+# --- MUROJAAT VA SERVER ---
+
+@dp.message(F.text == "Murojaat ☎️")
+async def murojaat_start(message: types.Message, state: FSMContext):
+    await state.set_state(MurojaatState.waiting_for_text)
+    await message.answer("Murojaatingizni yozib yuboring:")
+
+@dp.message(MurojaatState.waiting_for_text)
+async def process_murojaat(message: types.Message, state: FSMContext):
+    await state.clear()
+    await message.answer("Murojaatingiz adminga yuborildi.")
+    await bot.send_message(ADMIN_ID, f"📩 Murojaat (ID:{message.from_user.id}):\n{message.text}")
+
+@dp.message(F.chat.id == ADMIN_ID, F.reply_to_message)
+async def admin_reply(message: types.Message):
+    uid = re.search(r"ID:(\d+)", message.reply_to_message.text).group(1)
+    await bot.send_message(uid, f"👨‍💻 Admindan javob:\n{message.text}")
+    await message.reply("✅ Javob yuborildi.")
+
+async def handle(request):
+    return web.Response(text="Bot 24/7 ishlamoqda!")
+
+async def main():
+    init_db()
+    app = web.Application()
+    app.router.add_get("/", handle)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 8080))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
