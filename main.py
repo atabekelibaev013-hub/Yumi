@@ -132,4 +132,149 @@ def deduct_balance(user_id: int, amount: int):
     cursor.execute("UPDATE users SET balance = balance - ? WHERE user_id = ?", (amount, user_id))
     conn.commit()
     conn.close()
+    # --- QOLGAN BAZA FUNKSIYALARI ---
+def ban_user_db(user_id: int):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET is_banned = 1 WHERE user_id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+
+def get_user_by_id_or_username(identifier: str):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    clean_id = identifier.strip().replace("@", "")
+    if clean_id.isdigit():
+        cursor.execute("SELECT user_id, full_name, username, phone, balance FROM users WHERE user_id = ?", (int(clean_id),))
+    else:
+        cursor.execute("SELECT user_id, full_name, username, phone, balance FROM users WHERE LOWER(username) = LOWER(?)", (clean_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return row
+
+def set_user_balance(user_id: int, new_balance: int):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET balance = ? WHERE user_id = ?", (new_balance, user_id))
+    conn.commit()
+    conn.close()
+
+def create_withdrawal(user_id: int, amount: int, yumi_code: str) -> int:
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO withdrawals (user_id, amount, yumi_code) VALUES (?, ?, ?)", (user_id, amount, yumi_code))
+    req_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return req_id
+
+def get_withdrawal(req_id: int):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id, amount, yumi_code, status FROM withdrawals WHERE id = ?", (req_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return row
+
+def update_withdrawal_status(req_id: int, status: str):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE withdrawals SET status = ? WHERE id = ?", (status, req_id))
+    conn.commit()
+    conn.close()
+
+def get_top_referrers():
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT full_name, total_referrals FROM users WHERE is_banned = 0 ORDER BY total_referrals DESC LIMIT 10")
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+# --- KANAL OBUNASI VA DARKO / YUMICOIN API FUNKSIYASI ---
+async def check_subscription(bot: Bot, user_id: int) -> bool:
+    for channel in CHANNELS:
+        try:
+            member = await bot.get_chat_member(chat_id=channel, user_id=user_id)
+            if member.status in ["left", "kicked"]:
+                return False
+        except Exception:
+            return False
+    return True
+
+async def send_darko_diamonds(yumi_code: str, amount: int):
+    payload = {"api_key": DARKO_API_KEY, "code": yumi_code, "amount": amount}
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(DARKO_API_URL, json=payload, timeout=10) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return data.get("status") == "success", data.get("message", "Muvaffaqiyatli")
+                return False, f"Server xatosi: {resp.status}"
+    except Exception as e:
+        return False, str(e)
+
+# --- FSM HOLATLARI ---
+class MurojaatState(StatesGroup):
+    waiting_for_text = State()
+
+class WithdrawState(StatesGroup):
+    waiting_for_amount = State()
+    waiting_for_code = State()
+
+class PhoneState(StatesGroup):
+    waiting_for_phone = State()
+
+class AdminPanelState(StatesGroup):
+    waiting_for_identifier = State()
+    waiting_for_new_balance = State()
+
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher(storage=MemoryStorage())
+
+# --- KLAVIATURALAR ---
+def get_main_menu(user_id: int):
+    keyboard = [
+        [
+            KeyboardButton(text="Olmos ishlash 💎"),
+            KeyboardButton(text="Balans 💎"),
+            KeyboardButton(text="Olmos yechish 💎")
+        ],
+        [KeyboardButton(text="🔴 Murojaat ☎️")]
+    ]
+    if user_id == ADMIN_ID:
+        keyboard.append([KeyboardButton(text="👨‍💻 Admin Panel")])
+    return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+
+admin_menu = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="💰 Hisob")],
+        [KeyboardButton(text="⬅️ Bosh menyu")]
+    ],
+    resize_keyboard=True
+)
+
+phone_menu = ReplyKeyboardMarkup(
+    keyboard=[[KeyboardButton(text="📱 Telefon raqamni yuborish", request_contact=True)]],
+    resize_keyboard=True,
+    one_time_keyboard=True
+)
+
+def get_sub_keyboard():
+    buttons = []
+    for ch in CHANNELS:
+        ch_url = ch.replace("@", "https://t.me/")
+        buttons.append([InlineKeyboardButton(text="📢 Kanalga obuna bo'lish", url=ch_url)])
+    buttons.append([InlineKeyboardButton(text="✅ Tekshirish", callback_data="check_sub")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def get_admin_withdraw_keyboard(req_id: int, user_id: int):
+    buttons = [
+        [
+            InlineKeyboardButton(text="✅ Tasdiqlash", callback_data=f"wd_app:{req_id}"),
+            InlineKeyboardButton(text="❌ Rad etish", callback_data=f"wd_rej:{req_id}")
+        ],
+        [InlineKeyboardButton(text="🚫 Ban berish", callback_data=f"ban_usr:{user_id}")]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
     
