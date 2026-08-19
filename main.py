@@ -75,6 +75,21 @@ def get_or_create_user(user_id: int, full_name: str, username: str = None, refer
     conn.commit()
     conn.close()
 
+def has_phone(user_id: int) -> bool:
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT phone FROM users WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return bool(row and row[0] and str(row[0]).strip() != "")
+
+def save_phone(user_id: int, phone: str):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET phone = ? WHERE user_id = ?", (str(phone), user_id))
+    conn.commit()
+    conn.close()
+
 def is_user_banned(user_id: int) -> bool:
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
@@ -259,14 +274,7 @@ async def start_cmd(message: types.Message, command: CommandObject, state: FSMCo
         )
         return
 
-    # Telefon raqami yuborilganligini tekshirish
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("SELECT phone FROM users WHERE user_id = ?", (user_id,))
-    row = cursor.fetchone()
-    conn.close()
-
-    if not row or not row[0]:
+    if not has_phone(user_id):
         await state.set_state(PhoneState.waiting_for_phone)
         await message.answer(
             "📱 Botdan foydalanish uchun telefon raqamingizni yuboring:",
@@ -275,7 +283,7 @@ async def start_cmd(message: types.Message, command: CommandObject, state: FSMCo
         return
 
     await message.answer("Siz asosiy menyudasiz🖥️", reply_markup=main_menu)
-    # Foydalanuvchi kirish huquqini va ban holatini tekshirish
+    # Foydalanuvchi kirish huquqini, ban va telefonni tekshirish
 async def ensure_access(message: types.Message, state: FSMContext) -> bool:
     user_id = message.from_user.id
     if is_user_banned(user_id):
@@ -286,16 +294,11 @@ async def ensure_access(message: types.Message, state: FSMContext) -> bool:
         await message.answer("Botdan foydalanishdan oldin majburiy kanalga obuna boʻling ❗", reply_markup=get_sub_keyboard())
         return False
     
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("SELECT phone FROM users WHERE user_id = ?", (user_id,))
-    row = cursor.fetchone()
-    conn.close()
-    
-    if not row or not row[0]:
+    if not has_phone(user_id):
         await state.set_state(PhoneState.waiting_for_phone)
         await message.answer("📱 Botdan foydalanish uchun telefon raqamingizni yuboring:", reply_markup=phone_menu)
         return False
+        
     return True
 
 # "Tekshirish" tugmasi bosilganda
@@ -309,13 +312,7 @@ async def check_sub_callback(call: types.CallbackQuery, state: FSMContext):
     if await check_subscription(bot, user_id):
         await call.message.delete()
         
-        conn = sqlite3.connect(DB_NAME)
-        cursor = conn.cursor()
-        cursor.execute("SELECT phone FROM users WHERE user_id = ?", (user_id,))
-        row = cursor.fetchone()
-        conn.close()
-
-        if not row or not row[0]:
+        if not has_phone(user_id):
             await state.set_state(PhoneState.waiting_for_phone)
             await call.message.answer(
                 "📱 Botdan foydalanish uchun telefon raqamingizni yuboring:",
@@ -326,7 +323,7 @@ async def check_sub_callback(call: types.CallbackQuery, state: FSMContext):
     else:
         await call.answer("❌ Siz hali kanalga obuna bo'lmadingiz!", show_alert=True)
 
-# Telefon raqamni qabul qilish va referal bonus berish
+# Telefon raqamni qabul qilish va saqlash
 @dp.message(PhoneState.waiting_for_phone, F.contact)
 async def receive_phone(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
@@ -335,11 +332,12 @@ async def receive_phone(message: types.Message, state: FSMContext):
         return
 
     phone = message.contact.phone_number
+    # Telefon raqamni saqlash funksiyasini chaqiramiz (endi baza eslab qoladi)
+    save_phone(user_id, phone)
     
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     
-    cursor.execute("UPDATE users SET phone = ? WHERE user_id = ?", (phone, user_id))
     cursor.execute("SELECT referrer_id, bonus_given FROM users WHERE user_id = ?", (user_id,))
     row = cursor.fetchone()
     
@@ -665,4 +663,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-    
