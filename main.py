@@ -277,4 +277,276 @@ def get_admin_withdraw_keyboard(req_id: int, user_id: int):
         [InlineKeyboardButton(text="🚫 Ban berish", callback_data=f"ban_usr:{user_id}")]
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+    # --- FOYDALANUVCHI TEKSHIRUVI VA START ---
+
+async def ensure_access(message: types.Message, state: FSMContext) -> bool:
+    user_id = message.from_user.id
+    full_name = message.from_user.full_name
+    username = message.from_user.username
     
+    get_or_create_user(user_id, full_name, username)
+
+    if is_user_banned(user_id):
+        await message.answer("Siz botdan foydalanishdan bloklangansiz ❌")
+        return False
+
+    if not await check_subscription(bot, user_id):
+        await message.answer("Botdan foydalanishdan oldin majburiy kanalga obuna boʻling ❗", reply_markup=get_sub_keyboard())
+        return False
+    
+    if not has_phone(user_id):
+        await state.set_state(PhoneState.waiting_for_phone)
+        await message.answer("📱 Botdan foydalanish uchun telefon raqamingizni yuboring:", reply_markup=phone_menu)
+        return False
+        
+    return True
+
+@dp.message(CommandStart())
+async def start_cmd(message: types.Message, command: CommandObject, state: FSMContext):
+    await state.clear()
+    user_id = message.from_user.id
+    referrer_id = int(command.args) if command.args and command.args.isdigit() and int(command.args) != user_id else None
+    
+    get_or_create_user(user_id, message.from_user.full_name, message.from_user.username, referrer_id)
+
+    if not await ensure_access(message, state):
+        return
+
+    await message.answer("Siz asosiy menyudasiz🖥️", reply_markup=get_main_menu(user_id))
+
+@dp.callback_query(F.data == "check_sub")
+async def check_sub_callback(call: types.CallbackQuery, state: FSMContext):
+    user_id = call.from_user.id
+    if is_user_banned(user_id):
+        await call.answer("Siz bloklangansiz ❌", show_alert=True)
+        return
+
+    if await check_subscription(bot, user_id):
+        await call.message.delete()
+        if not has_phone(user_id):
+            await state.set_state(PhoneState.waiting_for_phone)
+            await call.message.answer("📱 Botdan foydalanish uchun telefon raqamingizni yuboring:", reply_markup=phone_menu)
+        else:
+            await call.message.answer("Siz asosiy menyudasiz🖥️", reply_markup=get_main_menu(user_id))
+    else:
+        await call.answer("❌ Siz hali kanalga obuna bo'lmadingiz!", show_alert=True)
+
+@dp.message(PhoneState.waiting_for_phone, F.contact)
+async def receive_phone(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
+    phone = message.contact.phone_number
+    
+    save_phone(user_id, phone, message.from_user.full_name, message.from_user.username)
+    
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT referrer_id, bonus_given FROM users WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    
+    if row and row[0] and not row[1]:
+        referrer_id = row[0]
+        today_str = str(date.today())
+        
+        cursor.execute("SELECT today_referrals, last_ref_date FROM users WHERE user_id = ?", (referrer_id,))
+        ref_user = cursor.fetchone()
+        
+        if ref_user:
+            ref_today, ref_date = ref_user[0], ref_user[1]
+            if ref_date != today_str:
+                ref_today = 0
+            ref_today += 1
+            
+            cursor.execute('''
+                UPDATE users 
+                SET balance = balance + 10,
+                    total_referrals = total_referrals + 1,
+                    today_referrals = ?,
+                    last_ref_date = ?
+                WHERE user_id = ?
+            ''', (ref_today, today_str, referrer_id))
+            
+            cursor.execute("UPDATE users SET bonus_given = 1 WHERE user_id = ?", (user_id,))
+            conn.commit()
+            
+            try:
+                await bot.send_message(
+                    referrer_id,
+                    f"🎉 Siz taklif qilgan foydalanuvchi ({message.from_user.full_name}) telefon raqamini tasdiqladi!\nSizga <b>+10 💎</b> berildi!",
+                    parse_mode="HTML"
+                )
+            except Exception:
+                pass
+    else:
+        conn.commit()
+    conn.close()
+    
+    await state.clear()
+    await message.answer("Siz asosiy menyudasiz🖥️", reply_markup=get_main_menu(user_id))
+
+# --- MENYU TUGMALARI HANDLERLARI ---
+
+# Olmos ishlash 💎
+@dp.message(F.text.in_(["Olmos ishlash 💎", "Olmos ishlash"]))
+async def olmos_handler(message: types.Message, state: FSMContext):
+    if not await ensure_access(message, state):
+        return
+
+    user_id = message.from_user.id
+    balance, total_refs, today_refs = get_user_stats(user_id)
+    bot_info = await bot.get_me()
+    ref_link = f"https://t.me/{bot_info.username}?start={user_id}"
+    
+    text = (
+        f"👥 Referal tizimi\n\n"
+        f"🔗 Sizning referal havolangiz:\n"
+        f"<code>{ref_link}</code>\n\n"
+        f"👤 Referallar soni: {total_refs}\n"
+        f"📅 Bugungi referallar: {today_refs}\n"
+        f"💎 Jami bonus: {balance}\n\n"
+        f"Har bir taklif qilingan do'stingiz uchun 10 💎 olasiz!\n\n"
+        f"🏆 Top referallar ro'yxatini ko'rish uchun /top buyrug'ini yuboring."
+    )
+    await message.answer(text, parse_mode="HTML", disable_web_page_preview=True)
+
+# /top buyrug'i (Top 10 taklif qilganlar)
+@dp.message(Command("top"))
+async def top_handler(message: types.Message, state: FSMContext):
+    if not await ensure_access(message, state):
+        return
+
+    top_users = get_top_referrers()
+    if not top_users:
+        await message.answer("🏆 Hali hech kim referal taklif qilmagan.")
+        return
+        
+    text = "🏆 <b>Eng ko'p referal taklif qilgan Top 10 foydalanuvchi:</b>\n\n"
+    medals = ["🥇", "🥈", "🥉"]
+    
+    for idx, (name, count) in enumerate(top_users, start=1):
+        prefix = medals[idx-1] if idx <= 3 else f"{idx}."
+        safe_name = name.replace("<", "&lt;").replace(">", "&gt;") if name else "Foydalanuvchi"
+        text += f"{prefix} <b>{safe_name}</b> — {count} ta referal\n"
+        
+    await message.answer(text, parse_mode="HTML")
+
+# Balans 💎
+@dp.message(F.text.in_(["Balans 💎", "Balans"]))
+async def balance_handler(message: types.Message, state: FSMContext):
+    if not await ensure_access(message, state):
+        return
+
+    user_id = message.from_user.id
+    balance, _, _ = get_user_stats(user_id)
+    await message.answer(f"Sizning hisobingizda {balance} olmos bor❗")
+
+# Olmos yechish 💎
+@dp.message(F.text.in_(["Olmos yechish 💎", "Olmos yechish"]))
+async def start_withdraw(message: types.Message, state: FSMContext):
+    if not await ensure_access(message, state):
+        return
+
+    user_id = message.from_user.id
+    balance, _, _ = get_user_stats(user_id)
+
+    if balance < 10:
+        await message.answer("Hisobingizda olmos yetarli emas❌(min 10💎)")
+        return
+
+    await state.set_state(WithdrawState.waiting_for_amount)
+    await message.answer("Qancha olmos yechmoqchisiz miqdorini yozib yuboring ❗")
+
+# Miqdorni qabul qilish
+@dp.message(WithdrawState.waiting_for_amount)
+async def process_withdraw_amount(message: types.Message, state: FSMContext):
+    if not await ensure_access(message, state):
+        await state.clear()
+        return
+
+    if not message.text.isdigit():
+        await message.answer("Iltimos miqdorini raqamda yozib yuboring ❗")
+        return
+
+    amount = int(message.text)
+    user_id = message.from_user.id
+    balance, _, _ = get_user_stats(user_id)
+
+    if amount < 10:
+        await message.answer("Minimal yechish miqdori 10 olmos! Qaytadan miqdor kiriting:")
+        return
+
+    if amount > balance:
+        await message.answer("hisobingizda olmos yetarli emas ❌")
+        return
+
+    await state.update_data(withdraw_amount=amount)
+    await state.set_state(WithdrawState.waiting_for_code)
+    await message.answer("Yumicoin kodingizni yuboring ❗")
+
+# Yumicoin kodini qabul qilish va adminga yuborish
+@dp.message(WithdrawState.waiting_for_code)
+async def process_withdraw_code(message: types.Message, state: FSMContext):
+    if not await ensure_access(message, state):
+        await state.clear()
+        return
+
+    user_data = await state.get_data()
+    amount = user_data.get("withdraw_amount")
+    yumi_code = message.text.strip()
+    user_id = message.from_user.id
+    username = message.from_user.username
+    
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT phone FROM users WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    conn.close()
+    phone = row[0] if row else "Mavjud emas"
+
+    deduct_balance(user_id, amount)
+    req_id = create_withdrawal(user_id, amount, yumi_code)
+    
+    await state.clear()
+    await message.answer("Olmos yechish arizangiz adminga yuborildi tasdiqlashini kuting⏳")
+
+    uname_str = f"@{username}" if username else "Mavjud emas"
+    admin_msg = (
+        f"Foydalanuvchi: {uname_str}\n"
+        f"Id raqami :{user_id}\n"
+        f"Tel nomer: {phone}\n"
+        f"Olmos yechmoqchi: {amount}\n"
+        f"Yumicoin kodi:{yumi_code}"
+    )
+
+    await bot.send_message(
+        ADMIN_ID,
+        admin_msg,
+        reply_markup=get_admin_withdraw_keyboard(req_id, user_id)
+    )
+
+# 🔴 Murojaat ☎️
+@dp.message(F.text.in_(["🔴 Murojaat ☎️", "Murojaat ☎️"]))
+async def murojaat_button(message: types.Message, state: FSMContext):
+    if not await ensure_access(message, state):
+        return
+
+    await state.set_state(MurojaatState.waiting_for_text)
+    await message.answer("Murojaatingizni yozib yuboring ❗")
+
+@dp.message(MurojaatState.waiting_for_text)
+async def receive_murojaat(message: types.Message, state: FSMContext):
+    await state.clear()
+    await message.answer("Murojaatingizni admin ko'rib chiqadi ⏳")
+    
+    user_info = f"👤 Kimdan: {message.from_user.full_name}\n"
+    if message.from_user.username:
+        user_info += f"🔗 Username: @{message.from_user.username}\n"
+    user_info += f"🆔 ID: <code>{message.from_user.id}</code>"
+
+    admin_msg = (
+        f"📩 <b>Yangi murojaat keldi!</b>\n\n"
+        f"{user_info}\n\n"
+        f"💬 <b>Xabar:</b>\n{message.text}\n\n"
+        f"<i>👇 Javob berish uchun ushbu xabarga Reply (Javob bering) qiling.</i>"
+    )
+    await bot.send_message(ADMIN_ID, admin_msg, parse_mode="HTML")
+
