@@ -2,6 +2,7 @@ import asyncio
 import os
 import re
 import sqlite3
+import aiohttp
 from datetime import date
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import CommandStart, CommandObject, Command
@@ -13,10 +14,11 @@ from aiohttp import web
 
 BOT_TOKEN = "8825351774:AAFI7D9WaBz3fcMV5fClnWCrOmWuLJqn0ug"
 ADMIN_ID = 7803078084  # Sizning Telegram ID raqamingiz
+DARKO_API_KEY = "yc_live_5286afa187f7b3d0a172d0e6c3e0e829cc65a48faf7b2748"
 
 DB_NAME = "bot_database.db"
 
-# Database yaratish va ulash
+# Database yaratish
 def init_db():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
@@ -51,7 +53,6 @@ def get_or_create_user(user_id: int, full_name: str, referrer_id: int = None):
         )
         conn.commit()
         
-        # Taklif qilgan odamga bonus va hisobot qo'shish
         if referrer_id and referrer_id != user_id:
             cursor.execute("SELECT today_referrals, last_ref_date FROM users WHERE user_id = ?", (referrer_id,))
             ref_user = cursor.fetchone()
@@ -92,6 +93,13 @@ def get_user_stats(user_id: int):
     conn.close()
     return 0, 0, 0
 
+def deduct_balance(user_id: int, amount: int):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET balance = balance - ? WHERE user_id = ?", (amount, user_id))
+    conn.commit()
+    conn.close()
+
 def get_top_referrers():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
@@ -104,23 +112,25 @@ def get_top_referrers():
 class MurojaatState(StatesGroup):
     waiting_for_text = State()
 
+class WithdrawState(StatesGroup):
+    waiting_for_amount = State()
+    waiting_for_code = State()
+
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# Asosiy menyu tugmalari
+# Asosiy menyu
 main_menu = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="Olmos ishlash 💎")],
+        [KeyboardButton(text="Olmos ishlash 💎"), KeyboardButton(text="Olmos yechish 💎")],
         [KeyboardButton(text="Murojaat ☎️")]
     ],
     resize_keyboard=True
 )
 
-# /start buyrug'i
 @dp.message(CommandStart())
 async def start_cmd(message: types.Message, command: CommandObject, state: FSMContext):
     await state.clear()
-    
     user_id = message.from_user.id
     full_name = message.from_user.full_name
     
@@ -134,8 +144,7 @@ async def start_cmd(message: types.Message, command: CommandObject, state: FSMCo
         try:
             await bot.send_message(
                 referrer_id,
-                f"🎉 <b>Sizning havolangiz orqali {full_name} botga kirdi!</b>\n"
-                f"Sizga <b>+10 💎</b> bonus berildi!",
+                f"🎉 <b>Sizning havolangiz orqali {full_name} botga kirdi!</b>\nSizga <b>+10 💎</b> bonus berildi!",
                 parse_mode="HTML"
             )
         except Exception:
@@ -143,7 +152,7 @@ async def start_cmd(message: types.Message, command: CommandObject, state: FSMCo
 
     await message.answer("Assalomu alaykum! Kerakli bo'limni tanlang:", reply_markup=main_menu)
 
-# "Olmos ishlash 💎" tugmasi
+# "Olmos ishlash 💎"
 @dp.message(F.text.in_(["Olmos ishlash 💎", "Olmos ishlash"]))
 async def olmos_handler(message: types.Message):
     user_id = message.from_user.id
@@ -164,14 +173,72 @@ async def olmos_handler(message: types.Message):
         f"Har bir taklif qilingan do'stingiz uchun 10 💎 olasiz!\n\n"
         f"🏆 Top referallar ro'yxatini ko'rish uchun /top buyrug'ini yuboring."
     )
-    
     await message.answer(text, parse_mode="HTML", disable_web_page_preview=True)
+
+# "Olmos yechish 💎"
+@dp.message(F.text.in_(["Olmos yechish 💎", "Olmos yechish"]))
+async def start_withdraw(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
+    get_or_create_user(user_id, message.from_user.full_name)
+    balance, _, _ = get_user_stats(user_id)
+
+    if balance < 10:
+        await message.answer("hisobingizda olmos yetarli emas ❌")
+        return
+
+    await state.set_state(WithdrawState.waiting_for_amount)
+    await message.answer("qancha olmos yechmoqchisiz miqdorini yozib yuboring")
+
+# Miqdorni qabul qilish
+@dp.message(WithdrawState.waiting_for_amount)
+async def process_withdraw_amount(message: types.Message, state: FSMContext):
+    if not message.text.isdigit():
+        await message.answer("iltimos miqdorini yozib yuboring ❗")
+        return
+
+    amount = int(message.text)
+    user_id = message.from_user.id
+    balance, _, _ = get_user_stats(user_id)
+
+    if amount < 10:
+        await message.answer("Minimal yechish miqdori 10 olmos! Qaytadan miqdor kiriting:")
+        return
+
+    if amount > balance:
+        await message.answer("hisobingizda olmos yetarli emas ❌")
+        return
+
+    await state.update_data(withdraw_amount=amount)
+    await state.set_state(WithdrawState.waiting_for_code)
+    await message.answer("yumicoin kodingizni yozib yuboring")
+
+# Yumicoin kodini qabul qilish va yakunlash
+@dp.message(WithdrawState.waiting_for_code)
+async def process_withdraw_code(message: types.Message, state: FSMContext):
+    user_data = await state.get_data()
+    amount = user_data.get("withdraw_amount")
+    yumi_code = message.text
+    user_id = message.from_user.id
+
+    deduct_balance(user_id, amount)
+    await state.clear()
+
+    await message.answer(f"yumicoin hisobingizda {amount} olmos tashlab berildi ✅")
+
+    # Adminga xabar
+    admin_msg = (
+        f"💸 <b>Yangi olmos yechish so'rovi!</b>\n\n"
+        f"👤 <b>Foydalanuvchi:</b> {message.from_user.full_name} (@{message.from_user.username})\n"
+        f"🆔 <b>ID:</b> <code>{user_id}</code>\n"
+        f"💎 <b>Miqdori:</b> {amount} olmos\n"
+        f"🔑 <b>YumiCoin kodi:</b> <code>{yumi_code}</code>"
+    )
+    await bot.send_message(ADMIN_ID, admin_msg, parse_mode="HTML")
 
 # /top buyrug'i
 @dp.message(Command("top"))
 async def top_handler(message: types.Message):
     top_users = get_top_referrers()
-    
     if not top_users:
         await message.answer("🏆 Hali hech kim referal taklif qilmagan.")
         return
@@ -186,13 +253,12 @@ async def top_handler(message: types.Message):
         
     await message.answer(text, parse_mode="HTML")
 
-# "Murojaat ☎️" tugmasi
+# "Murojaat ☎️"
 @dp.message(F.text == "Murojaat ☎️")
 async def murojaat_button(message: types.Message, state: FSMContext):
     await state.set_state(MurojaatState.waiting_for_text)
     await message.answer("Murojaatingizni yozib yuboring ❗")
 
-# Murojaat matnini qabul qilish
 @dp.message(MurojaatState.waiting_for_text)
 async def receive_murojaat(message: types.Message, state: FSMContext):
     await state.clear()
@@ -209,10 +275,9 @@ async def receive_murojaat(message: types.Message, state: FSMContext):
         f"💬 <b>Xabar:</b>\n{message.text}\n\n"
         f"<i>👇 Javob berish uchun ushbu xabarga Reply (Javob bering) qiling.</i>"
     )
-    
     await bot.send_message(ADMIN_ID, admin_msg, parse_mode="HTML")
 
-# Admin Reply orqali javob yozganda
+# Admin Reply orqali javob berishi
 @dp.message(F.chat.id == ADMIN_ID, F.reply_to_message)
 async def admin_reply(message: types.Message):
     reply_text = message.reply_to_message.text or message.reply_to_message.caption
@@ -232,12 +297,12 @@ async def admin_reply(message: types.Message):
         except Exception as e:
             await message.reply(f"❌ Xabarni yuborib bo'lmadi: {e}")
 
-# Render porti uchun veb-server
+# Render serveri uchun veb-server
 async def handle(request):
     return web.Response(text="Bot 24/7 rejimida ishlayapti!")
 
 async def main():
-    init_db()  # Bazani tayyorlash
+    init_db()
     app = web.Application()
     app.router.add_get("/", handle)
     runner = web.AppRunner(app)
@@ -250,4 +315,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-                       
+    
