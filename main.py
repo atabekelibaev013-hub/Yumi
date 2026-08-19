@@ -17,14 +17,14 @@ from aiogram.types import (
 )
 from aiohttp import web
 
-BOT_TOKEN = "8825351774:AAFI7D9WaBz3fcMV5fClnWCrOmWuLJqn0ug"
+BOT_TOKEN = "8503188728:AAH5ktMt7AIOQIRfJvDFrMLPDnIvjufUH-A"
 ADMIN_ID = 7803078084
 DARKO_API_KEY = "yc_live_5286afa187f7b3d0a172d0e6c3e0e829cc65a48faf7b2748"
 
 DB_NAME = "bot_database.db"
 CHANNELS = ["@Minecoine_kanal"]
 
-# Database yaratish va yangilash
+# Baza funksiyalari
 def init_db():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
@@ -136,7 +136,6 @@ def deduct_balance(user_id: int, amount: int):
     conn.commit()
     conn.close()
 
-# Admin uchun foydalanuvchini topish va hisobini o'zgartirish funksiyalari
 def get_user_by_id_or_username(identifier: str):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
@@ -251,7 +250,7 @@ class AdminPanelState(StatesGroup):
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# Dinamik menyu (Adminga "Admin Panel" tugmasi chiqadi)
+# Dinamik menyu
 def get_main_menu(user_id: int):
     keyboard = [
         [
@@ -312,7 +311,104 @@ async def start_cmd(message: types.Message, command: CommandObject, state: FSMCo
         return
 
     await message.answer("Siz asosiy menyudasiz🖥️", reply_markup=get_main_menu(user_id))
-    # --- ADMIN PANEL HANDLERLARI ---
+    # Foydalanuvchi kirish huquqini, ban va telefonni tekshirish
+async def ensure_access(message: types.Message, state: FSMContext) -> bool:
+    user_id = message.from_user.id
+    if is_user_banned(user_id):
+        await message.answer("Siz botdan foydalanishdan bloklangansiz ❌")
+        return False
+
+    if not await check_subscription(bot, user_id):
+        await message.answer("Botdan foydalanishdan oldin majburiy kanalga obuna boʻling ❗", reply_markup=get_sub_keyboard())
+        return False
+    
+    if not has_phone(user_id):
+        await state.set_state(PhoneState.waiting_for_phone)
+        await message.answer("📱 Botdan foydalanish uchun telefon raqamingizni yuboring:", reply_markup=phone_menu)
+        return False
+        
+    return True
+
+# "Tekshirish" tugmasi bosilganda
+@dp.callback_query(F.data == "check_sub")
+async def check_sub_callback(call: types.CallbackQuery, state: FSMContext):
+    user_id = call.from_user.id
+    if is_user_banned(user_id):
+        await call.answer("Siz bloklangansiz ❌", show_alert=True)
+        return
+
+    if await check_subscription(bot, user_id):
+        await call.message.delete()
+        
+        if not has_phone(user_id):
+            await state.set_state(PhoneState.waiting_for_phone)
+            await call.message.answer(
+                "📱 Botdan foydalanish uchun telefon raqamingizni yuboring:",
+                reply_markup=phone_menu
+            )
+        else:
+            await call.message.answer("Siz asosiy menyudasiz🖥️", reply_markup=get_main_menu(user_id))
+    else:
+        await call.answer("❌ Siz hali kanalga obuna bo'lmadingiz!", show_alert=True)
+
+# Telefon raqamni qabul qilish va saqlash
+@dp.message(PhoneState.waiting_for_phone, F.contact)
+async def receive_phone(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
+    if is_user_banned(user_id):
+        await message.answer("Siz bloklangansiz ❌")
+        return
+
+    phone = message.contact.phone_number
+    save_phone(user_id, phone)
+    
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT referrer_id, bonus_given FROM users WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    
+    if row and row[0] and not row[1]:
+        referrer_id = row[0]
+        today_str = str(date.today())
+        
+        cursor.execute("SELECT today_referrals, last_ref_date FROM users WHERE user_id = ?", (referrer_id,))
+        ref_user = cursor.fetchone()
+        
+        if ref_user:
+            ref_today, ref_date = ref_user[0], ref_user[1]
+            if ref_date != today_str:
+                ref_today = 0
+            ref_today += 1
+            
+            cursor.execute('''
+                UPDATE users 
+                SET balance = balance + 10,
+                    total_referrals = total_referrals + 1,
+                    today_referrals = ?,
+                    last_ref_date = ?
+                WHERE user_id = ?
+            ''', (ref_today, today_str, referrer_id))
+            
+            cursor.execute("UPDATE users SET bonus_given = 1 WHERE user_id = ?", (user_id,))
+            conn.commit()
+            
+            try:
+                await bot.send_message(
+                    referrer_id,
+                    f"🎉 Siz taklif qilgan foydalanuvchi ({message.from_user.full_name}) telefon raqamini tasdiqladi!\nSizga <b>+10 💎</b> berildi!",
+                    parse_mode="HTML"
+                )
+            except Exception:
+                pass
+    else:
+        conn.commit()
+        
+    conn.close()
+    await state.clear()
+    await message.answer("Siz asosiy menyudasiz🖥️", reply_markup=get_main_menu(user_id))
+
+# --- ADMIN PANEL HANDLERLARI ---
 
 @dp.message(F.text == "👨‍💻 Admin Panel")
 async def admin_panel(message: types.Message):
@@ -331,110 +427,150 @@ async def ask_for_user(message: types.Message, state: FSMContext):
 
 @dp.message(AdminPanelState.waiting_for_identifier)
 async def process_user_search(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+
     identifier = message.text.strip()
     user_info = get_user_by_id_or_username(identifier)
     
     if not user_info:
-        await message.answer("Foydalanuvchi topilmadi. Qaytadan urinib ko'ring yoki /start yozing.")
+        await message.answer("❌ Foydalanuvchi topilmadi. ID yoki username ni to'g'ri kiriting:")
         return
 
     user_id, full_name, username, phone, balance = user_info
     
     text = (
-        f"👤 Foydalanuvchi topildi:\n\n"
-        f"🆔 ID: {user_id}\n"
-        f"📛 Ism: {full_name}\n"
-        f"📱 Username: @{username if username else 'Mavjud emas'}\n"
-        f"📞 Telefon: {phone if phone else 'Mavjud emas'}\n"
-        f"💎 Olmos: {balance}"
+        f"👤 <b>Foydalanuvchi ma'lumotlari:</b>\n\n"
+        f"🆔 <b>ID:</b> <code>{user_id}</code>\n"
+        f"📛 <b>Ism:</b> {full_name}\n"
+        f"🔗 <b>Username:</b> @{username if username else 'Mavjud emas'}\n"
+        f"📱 <b>Nomer:</b> {phone if phone else 'Mavjud emas'}\n"
+        f"💎 <b>Hisobindagi olmos:</b> {balance} ta"
     )
     
-    # Hisobni o'zgartirish tugmasi
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✏️ Hisobni o'zgartirish", callback_data=f"edit_bal:{user_id}")]
     ])
     
-    await message.answer(text, reply_markup=keyboard)
+    await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
     await state.clear()
 
-# --- CALLBACKLAR ---
-
-@dp.callback_query(F.data.startswith("edit_bal:"))
-async def edit_balance_prompt(callback: types.CallbackQuery, state: FSMContext):
-    user_id = callback.data.split(":")[1]
-    await state.update_data(target_user_id=user_id)
-    await state.set_state(AdminPanelState.waiting_for_new_balance)
-    await callback.message.answer("Foydalanuvchining yangi hisobini (sonini) kiriting:")
-    await callback.answer()
-
-# --- ASOSIY MENYU VA QOLGAN HANDLERLAR ---
-
-@dp.message(F.text == "Balans 💎")
-async def show_balance(message: types.Message):
-    balance, total_refs, today_refs = get_user_stats(message.from_user.id)
-    await message.answer(f"Sizning hisobingiz: {balance} ta olmos 💎")
-
-@dp.message(F.text == "🔴 Murojaat ☎️")
-async def ask_murojaat(message: types.Message, state: FSMContext):
-    await state.set_state(MurojaatState.waiting_for_text)
-    await message.answer("Murojaatingizni yuboring:")
-
-@dp.message(MurojaatState.waiting_for_text)
-async def process_murojaat(message: types.Message, state: FSMContext):
-    await bot.send_message(ADMIN_ID, f"Yangi murojaat:\nFoydalanuvchi: @{message.from_user.username}\nID: {message.from_user.id}\nXabar: {message.text}")
-    await message.answer("Murojaatingiz adminga yetkazildi.")
-    await state.clear()
-# --- ADMIN PANEL: HISOBNI YANGILASH LOGIKASI ---
-
-@dp.message(AdminPanelState.waiting_for_new_balance)
-async def process_new_balance(message: types.Message, state: FSMContext):
-    # Kiritilgan qiymat son ekanligini tekshirish
-    if not message.text.isdigit():
-        await message.answer("Iltimos, hisob uchun faqat butun son kiriting!")
+# "Olmos ishlash 💎"
+@dp.message(F.text.in_(["Olmos ishlash 💎", "Olmos ishlash"]))
+async def olmos_handler(message: types.Message, state: FSMContext):
+    if not await ensure_access(message, state):
         return
-    
-    new_balance = int(message.text)
-    data = await state.get_data()
-    target_user_id = data.get("target_user_id")
-    
-    # Bazada hisobni yangilash
-    set_user_balance(int(target_user_id), new_balance)
-    
-    await message.answer(f"✅ Foydalanuvchining hisobi {new_balance} olmosga o'zgartirildi!")
-    
-    # Foydalanuvchiga xabar yuborish
-    try:
-        await bot.send_message(
-            target_user_id, 
-            f"Admin tomonidan hisobingiz o'zgartirildi. Hozirgi balans: {new_balance} 💎"
-        )
-    except:
-        pass
-    
-    await state.clear()
 
-# --- QOLGAN KERAKLI HANDLERLAR (Withdraw va Top uchun) ---
+    user_id = message.from_user.id
+    balance, total_refs, today_refs = get_user_stats(user_id)
+    bot_info = await bot.get_me()
+    ref_link = f"https://t.me/{bot_info.username}?start={user_id}"
+    
+    text = (
+        f"👥 <b>Referal tizimi</b>\n\n"
+        f"🔗 <b>Sizning referal havolangiz:</b>\n"
+        f"<code>{ref_link}</code>\n\n"
+        f"👤 <b>Referallar soni:</b> {total_refs}\n"
+        f"📅 <b>Bugungi referallar:</b> {today_refs}\n"
+        f"💎 <b>Jami bonus:</b> {balance}\n\n"
+        f"Har bir taklif qilingan do'stingiz uchun 10 💎 olasiz!\n\n"
+        f"🏆 Top referallar ro'yxatini ko'rish uchun /top buyrug'ini yuboring."
+    )
+    await message.answer(text, parse_mode="HTML", disable_web_page_preview=True)
 
-@dp.message(F.text.in_(["Olmos yechish 💎", "Olmos yechish"]))
-async def withdraw_start(message: types.Message, state: FSMContext):
-    # Bu qism oldingi qismlarda bo'lgan, agar mavjud bo'lmasa shu yerdan qo'shasiz
+# "Balans 💎"
+@dp.message(F.text.in_(["Balans 💎", "Balans"]))
+async def balance_handler(message: types.Message, state: FSMContext):
+    if not await ensure_access(message, state):
+        return
+
     user_id = message.from_user.id
     balance, _, _ = get_user_stats(user_id)
-    if balance < 10:
-        await message.answer("Hisobingizda yetarli olmos yo'q (min 10)!")
+    await message.answer(f"Sizning hisobingizda {balance} olmos bor❗")
+
+# "Olmos yechish 💎"
+@dp.message(F.text.in_(["Olmos yechish 💎", "Olmos yechish"]))
+async def start_withdraw(message: types.Message, state: FSMContext):
+    if not await ensure_access(message, state):
         return
+
+    user_id = message.from_user.id
+    balance, _, _ = get_user_stats(user_id)
+
+    if balance < 10:
+        await message.answer("hisobingizda olmos yetarli emas ❌")
+        return
+
     await state.set_state(WithdrawState.waiting_for_amount)
-    await message.answer("Qancha olmos yechmoqchisiz?")
+    await message.answer("qancha olmos yechmoqchisiz miqdorini yozib yuboring")
 
-# --- BOTNI ISHGA TUSHIRISH ---
+# Miqdorni qabul qilish
+@dp.message(WithdrawState.waiting_for_amount)
+async def process_withdraw_amount(message: types.Message, state: FSMContext):
+    if not await ensure_access(message, state):
+        await state.clear()
+        return
 
-async def main():
-    # Bazani ishga tushirish
-    init_db()
+    if not message.text.isdigit():
+        await message.answer("iltimos miqdorini yozib yuboring ❗")
+        return
+
+    amount = int(message.text)
+    user_id = message.from_user.id
+    balance, _, _ = get_user_stats(user_id)
+
+    if amount < 10:
+        await message.answer("Minimal yechish miqdori 10 olmos! Qaytadan miqdor kiriting:")
+        return
+
+    if amount > balance:
+        await message.answer("hisobingizda olmos yetarli emas ❌")
+        return
+
+    await state.update_data(withdraw_amount=amount)
+    await state.set_state(WithdrawState.waiting_for_code)
+    await message.answer("yumicoin kodingizni yozib yuboring")
+
+# Yumicoin kodini qabul qilish va Adminga so'rov yuborish
+@dp.message(WithdrawState.waiting_for_code)
+async def process_withdraw_code(message: types.Message, state: FSMContext):
+    if not await ensure_access(message, state):
+        await state.clear()
+        return
+
+    user_data = await state.get_data()
+    amount = user_data.get("withdraw_amount")
+    yumi_code = message.text.strip()
+    user_id = message.from_user.id
+    username = message.from_user.username
     
-    # Botni polling rejimida ishga tushirish
-    print("Bot ishga tushdi...")
-    await dp.start_polling(bot)
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT phone FROM users WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    conn.close()
+    phone = row[0] if row else "Yo'q"
 
-if __name__ == "__main__":
-    asyncio.run(main())
+    deduct_balance(user_id, amount)
+    req_id = create_withdrawal(user_id, amount, yumi_code)
+    
+    await state.clear()
+    await message.answer("✅ So'rovingiz adminga yuborildi! Tasdiqlanishini kuting ⏳")
+
+    uname_str = f"@{username}" if username else "Mavjud emas"
+    admin_msg = (
+        f"📥 <b>Yangi olmos yechish so'rovi! (#ID{req_id})</b>\n\n"
+        f"👤 {uname_str}\n"
+        f"🆔 ID: <code>{user_id}</code>\n"
+        f"📱 Nomeri: <code>{phone}</code>\n"
+        f"💎 Olmos yechmoqchi: <b>{amount}</b>\n"
+        f"🔑 Kodi: <code>{yumi_code}</code>"
+    )
+
+    await bot.send_message(
+        ADMIN_ID,
+        admin_msg,
+        parse_mode="HTML",
+        reply_markup=get_admin_withdraw_keyboard(req_id, user_id)
+    )
+    
