@@ -108,6 +108,24 @@ def get_top_referrers():
     conn.close()
     return rows
 
+# Darko API orqali olmos yuborish
+async def send_darko_diamonds(yumi_code: str, amount: int):
+    url = "https://api.darko.uz/v1/withdraw"
+    payload = {
+        "api_key": DARKO_API_KEY,
+        "code": yumi_code,
+        "amount": amount
+    }
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload, timeout=10) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return data.get("status") == "success", data.get("message", "Muvaffaqiyatli")
+                return False, f"Server xatosi: {resp.status}"
+    except Exception as e:
+        return False, str(e)
+
 # Holatlar (FSM)
 class MurojaatState(StatesGroup):
     waiting_for_text = State()
@@ -212,28 +230,34 @@ async def process_withdraw_amount(message: types.Message, state: FSMContext):
     await state.set_state(WithdrawState.waiting_for_code)
     await message.answer("yumicoin kodingizni yozib yuboring")
 
-# Yumicoin kodini qabul qilish va yakunlash
+# Yumicoin kodini qabul qilish va avtomatik yuborish
 @dp.message(WithdrawState.waiting_for_code)
 async def process_withdraw_code(message: types.Message, state: FSMContext):
     user_data = await state.get_data()
     amount = user_data.get("withdraw_amount")
-    yumi_code = message.text
+    yumi_code = message.text.strip()
     user_id = message.from_user.id
 
-    deduct_balance(user_id, amount)
-    await state.clear()
+    msg = await message.answer("⏳ Darko API orqali olmos yuborilmoqda, kuting...")
 
-    await message.answer(f"yumicoin hisobingizda {amount} olmos tashlab berildi ✅")
+    success, api_msg = await send_darko_diamonds(yumi_code, amount)
 
-    # Adminga xabar
-    admin_msg = (
-        f"💸 <b>Yangi olmos yechish so'rovi!</b>\n\n"
-        f"👤 <b>Foydalanuvchi:</b> {message.from_user.full_name} (@{message.from_user.username})\n"
-        f"🆔 <b>ID:</b> <code>{user_id}</code>\n"
-        f"💎 <b>Miqdori:</b> {amount} olmos\n"
-        f"🔑 <b>YumiCoin kodi:</b> <code>{yumi_code}</code>"
-    )
-    await bot.send_message(ADMIN_ID, admin_msg, parse_mode="HTML")
+    if success:
+        deduct_balance(user_id, amount)
+        await state.clear()
+        await msg.edit_text(f"✅ Yumicoin hisobingizga {amount} olmos avtomatik tashlab berildi!")
+
+        admin_msg = (
+            f"⚡️ <b>Avto-yechish muvaffaqiyatli bajarildi!</b>\n\n"
+            f"👤 <b>Foydalanuvchi:</b> {message.from_user.full_name} (@{message.from_user.username})\n"
+            f"🆔 <b>ID:</b> <code>{user_id}</code>\n"
+            f"💎 <b>Miqdori:</b> {amount} olmos\n"
+            f"🔑 <b>YumiCoin kodi:</b> <code>{yumi_code}</code>"
+        )
+        await bot.send_message(ADMIN_ID, admin_msg, parse_mode="HTML")
+    else:
+        await state.clear()
+        await msg.edit_text(f"❌ Olmos o'tkazishda xatolik yuz berdi: {api_msg}\nBalansizdan olmos ayrilmadi.")
 
 # /top buyrug'i
 @dp.message(Command("top"))
@@ -295,7 +319,7 @@ async def admin_reply(message: types.Message):
             )
             await message.reply("✅ Javobingiz foydalanuvchiga yuborildi!")
         except Exception as e:
-            await message.reply(f"❌ Xabarni yuborib bo'lmadi: {e}")
+            await message.reply(f"❌ Xabarni yuborib bo'mladi: {e}")
 
 # Render serveri uchun veb-server
 async def handle(request):
