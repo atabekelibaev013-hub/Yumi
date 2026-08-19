@@ -279,3 +279,107 @@ phone_menu = ReplyKeyboardMarkup(
     one_time_keyboard=True
     )
                    
+# --- FOYDALANUVCHI KIRISH VA ACCESS HANDLERLARI ---
+
+async def ensure_access(message: types.Message, state: FSMContext) -> bool:
+    user_id = message.from_user.id
+    full_name = message.from_user.full_name
+    username = message.from_user.username
+    
+    # Bazaga foydalanuvchini kiritamiz
+    get_or_create_user(user_id, full_name, username)
+
+    if is_user_banned(user_id):
+        await message.answer("Siz botdan foydalanishdan bloklangansiz ❌")
+        return False
+
+    if not await check_subscription(bot, user_id):
+        await message.answer("Botdan foydalanishdan oldin majburiy kanalga obuna boʻling ❗", reply_markup=get_sub_keyboard())
+        return False
+    
+    if not has_phone(user_id):
+        await state.set_state(PhoneState.waiting_for_phone)
+        await message.answer("📱 Botdan foydalanish uchun telefon raqamingizni yuboring:", reply_markup=phone_menu)
+        return False
+        
+    return True
+
+@dp.message(CommandStart())
+async def start_cmd(message: types.Message, command: CommandObject, state: FSMContext):
+    await state.clear()
+    user_id = message.from_user.id
+    referrer_id = int(command.args) if command.args and command.args.isdigit() else None
+    
+    # Bazaga qo'shamiz
+    get_or_create_user(user_id, message.from_user.full_name, message.from_user.username, referrer_id)
+
+    if not await ensure_access(message, state):
+        return
+
+    await message.answer("Siz asosiy menyudasiz🖥️", reply_markup=get_main_menu(user_id))
+
+@dp.callback_query(F.data == "check_sub")
+async def check_sub_callback(call: types.CallbackQuery, state: FSMContext):
+    if await check_subscription(bot, call.from_user.id):
+        await call.message.delete()
+        if not await ensure_access(call.message, state): return
+        await call.message.answer("Siz asosiy menyudasiz🖥️", reply_markup=get_main_menu(call.from_user.id))
+    else:
+        await call.answer("❌ Siz hali kanalga obuna bo'lmadingiz!", show_alert=True)
+
+# Telefon raqamni qabul qilish (TU ZATILGAN QISM)
+@dp.message(PhoneState.waiting_for_phone, F.contact)
+async def receive_phone(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
+    phone = message.contact.phone_number
+    
+    # Bazaga yozish (yangi foydalanuvchi bo'lsa ham ishlaydi)
+    save_phone(user_id, phone, message.from_user.full_name, message.from_user.username)
+    
+    await state.clear()
+    await message.answer("Raqamingiz qabul qilindi! ✅", reply_markup=get_main_menu(user_id))
+
+# --- MENYU HANDLERLARI ---
+
+@dp.message(F.text.in_(["Olmos ishlash 💎", "Olmos ishlash"]))
+async def olmos_handler(message: types.Message, state: FSMContext):
+    if not await ensure_access(message, state): return
+    balance, total_refs, today_refs = get_user_stats(message.from_user.id)
+    ref_link = f"https://t.me/{(await bot.get_me()).username}?start={message.from_user.id}"
+    text = f"👥 Referal tizimi\n\n🔗 Havolangiz: <code>{ref_link}</code>\n👤 Referallar: {total_refs}\n💎 Bonus: {balance}\n\nHar bir do'stingiz uchun 10 💎!"
+    await message.answer(text, parse_mode="HTML")
+
+@dp.message(F.text.in_(["Balans 💎", "Balans"]))
+async def balance_handler(message: types.Message, state: FSMContext):
+    if not await ensure_access(message, state): return
+    balance, _, _ = get_user_stats(message.from_user.id)
+    await message.answer(f"Sizning hisobingizda {balance} olmos bor❗")
+
+@dp.message(F.text.in_(["Olmos yechish 💎", "Olmos yechish"]))
+async def start_withdraw(message: types.Message, state: FSMContext):
+    if not await ensure_access(message, state): return
+    balance, _, _ = get_user_stats(message.from_user.id)
+    if balance < 10:
+        await message.answer("Hisobingizda olmos yetarli emas (minimal 10) ❌")
+        return
+    await state.set_state(WithdrawState.waiting_for_amount)
+    await message.answer("Qancha olmos yechmoqchisiz? Miqdorini yozing:")
+
+@dp.message(WithdrawState.waiting_for_amount)
+async def process_withdraw_amount(message: types.Message, state: FSMContext):
+    if not message.text.isdigit() or int(message.text) < 10:
+        await message.answer("Iltimos, to'g'ri son kiriting (kamida 10):")
+        return
+    await state.update_data(withdraw_amount=int(message.text))
+    await state.set_state(WithdrawState.waiting_for_code)
+    await message.answer("Yumicoin kodingizni yuboring:")
+
+@dp.message(WithdrawState.waiting_for_code)
+async def process_withdraw_code(message: types.Message, state: FSMContext):
+    user_data = await state.get_data()
+    amount = user_data.get("withdraw_amount")
+    deduct_balance(message.from_user.id, amount)
+    req_id = create_withdrawal(message.from_user.id, amount, message.text.strip())
+    await state.clear()
+    await message.answer("✅ So'rov adminga yuborildi!")
+    # Adminga yuborish (bu qism 4-qismda tugallanadi)
