@@ -137,10 +137,14 @@ class WithdrawState(StatesGroup):
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# Asosiy menyu
+# Asosiy menyu (Balans 💎 tugmasi o'rtaga joylashtirildi)
 main_menu = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="Olmos ishlash 💎"), KeyboardButton(text="Olmos yechish 💎")],
+        [
+            KeyboardButton(text="Olmos ishlash 💎"),
+            KeyboardButton(text="Balans 💎"),
+            KeyboardButton(text="Olmos yechish 💎")
+        ],
         [KeyboardButton(text="Murojaat ☎️")]
     ],
     resize_keyboard=True
@@ -192,6 +196,14 @@ async def olmos_handler(message: types.Message):
         f"🏆 Top referallar ro'yxatini ko'rish uchun /top buyrug'ini yuboring."
     )
     await message.answer(text, parse_mode="HTML", disable_web_page_preview=True)
+
+# "Balans 💎"
+@dp.message(F.text.in_(["Balans 💎", "Balans"]))
+async def balance_handler(message: types.Message):
+    user_id = message.from_user.id
+    get_or_create_user(user_id, message.from_user.full_name)
+    balance, _, _ = get_user_stats(user_id)
+    await message.answer(f"Sizning hisobingizda {balance} olmos bor❗")
 
 # "Olmos yechish 💎"
 @dp.message(F.text.in_(["Olmos yechish 💎", "Olmos yechish"]))
