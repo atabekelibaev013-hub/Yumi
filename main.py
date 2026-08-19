@@ -9,7 +9,12 @@ from aiogram.filters import CommandStart, CommandObject, Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import (
+    ReplyKeyboardMarkup,
+    KeyboardButton,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton
+)
 from aiohttp import web
 
 BOT_TOKEN = "8825351774:AAFI7D9WaBz3fcMV5fClnWCrOmWuLJqn0ug"
@@ -17,11 +22,9 @@ ADMIN_ID = 7803078084
 DARKO_API_KEY = "yc_live_5286afa187f7b3d0a172d0e6c3e0e829cc65a48faf7b2748"
 
 DB_NAME = "bot_database.db"
-
-# Majburiy kanallar ro'yxati
 CHANNELS = ["@Minecoine_kanal"]
 
-# Database yaratish
+# Database yaratish va yangilash
 def init_db():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
@@ -29,11 +32,13 @@ def init_db():
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
             full_name TEXT,
+            phone TEXT,
             referrer_id INTEGER,
             balance INTEGER DEFAULT 0,
             total_referrals INTEGER DEFAULT 0,
             today_referrals INTEGER DEFAULT 0,
-            last_ref_date TEXT
+            last_ref_date TEXT,
+            bonus_given INTEGER DEFAULT 0
         )
     ''')
     conn.commit()
@@ -47,35 +52,13 @@ def get_or_create_user(user_id: int, full_name: str, referrer_id: int = None):
     cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
     user = cursor.fetchone()
     
-    is_new = False
     if not user:
-        is_new = True
         cursor.execute(
-            "INSERT INTO users (user_id, full_name, referrer_id, balance, total_referrals, today_referrals, last_ref_date) VALUES (?, ?, ?, 0, 0, 0, ?)",
+            "INSERT INTO users (user_id, full_name, referrer_id, balance, total_referrals, today_referrals, last_ref_date, bonus_given) VALUES (?, ?, ?, 0, 0, 0, ?, 0)",
             (user_id, full_name, referrer_id, today_str)
         )
         conn.commit()
-        
-        if referrer_id and referrer_id != user_id:
-            cursor.execute("SELECT today_referrals, last_ref_date FROM users WHERE user_id = ?", (referrer_id,))
-            ref_user = cursor.fetchone()
-            if ref_user:
-                ref_today, ref_date = ref_user[0], ref_user[1]
-                if ref_date != today_str:
-                    ref_today = 0
-                ref_today += 1
-                
-                cursor.execute('''
-                    UPDATE users 
-                    SET balance = balance + 10,
-                        total_referrals = total_referrals + 1,
-                        today_referrals = ?,
-                        last_ref_date = ?
-                    WHERE user_id = ?
-                ''', (ref_today, today_str, referrer_id))
-                conn.commit()
     conn.close()
-    return is_new
 
 def get_user_stats(user_id: int):
     conn = sqlite3.connect(DB_NAME)
@@ -111,7 +94,7 @@ def get_top_referrers():
     conn.close()
     return rows
 
-# Kanalga obuna bo'linganini tekshirish
+# Majburiy kanal obunasini tekshirish
 async def check_subscription(bot: Bot, user_id: int) -> bool:
     for channel in CHANNELS:
         try:
@@ -122,7 +105,7 @@ async def check_subscription(bot: Bot, user_id: int) -> bool:
             return False
     return True
 
-# Obuna tugmasi
+# Obuna klaviaturasi
 def get_sub_keyboard():
     buttons = []
     for ch in CHANNELS:
@@ -134,11 +117,7 @@ def get_sub_keyboard():
 # Darko API orqali olmos yuborish
 async def send_darko_diamonds(yumi_code: str, amount: int):
     url = "https://api.darko.uz/v1/withdraw"
-    payload = {
-        "api_key": DARKO_API_KEY,
-        "code": yumi_code,
-        "amount": amount
-    }
+    payload = {"api_key": DARKO_API_KEY, "code": yumi_code, "amount": amount}
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(url, json=payload, timeout=10) as resp:
@@ -149,7 +128,7 @@ async def send_darko_diamonds(yumi_code: str, amount: int):
     except Exception as e:
         return False, str(e)
 
-# Holatlar (FSM)
+# FSM Holatlari
 class MurojaatState(StatesGroup):
     waiting_for_text = State()
 
@@ -157,10 +136,13 @@ class WithdrawState(StatesGroup):
     waiting_for_amount = State()
     waiting_for_code = State()
 
+class PhoneState(StatesGroup):
+    waiting_for_phone = State()
+
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# Asosiy menyu
+# Menyu va tugmalar
 main_menu = ReplyKeyboardMarkup(
     keyboard=[
         [
@@ -173,6 +155,12 @@ main_menu = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
+phone_menu = ReplyKeyboardMarkup(
+    keyboard=[[KeyboardButton(text="📱 Telefon raqamni yuborish", request_contact=True)]],
+    resize_keyboard=True,
+    one_time_keyboard=True
+)
+
 @dp.message(CommandStart())
 async def start_cmd(message: types.Message, command: CommandObject, state: FSMContext):
     await state.clear()
@@ -183,17 +171,7 @@ async def start_cmd(message: types.Message, command: CommandObject, state: FSMCo
     if command.args and command.args.isdigit():
         referrer_id = int(command.args)
         
-    is_new = get_or_create_user(user_id, full_name, referrer_id)
-    
-    if is_new and referrer_id and referrer_id != user_id:
-        try:
-            await bot.send_message(
-                referrer_id,
-                f"🎉 <b>Sizning havolangiz orqali {full_name} botga kirdi!</b>\nSizga <b>+10 💎</b> bonus berildi!",
-                parse_mode="HTML"
-            )
-        except Exception:
-            pass
+    get_or_create_user(user_id, full_name, referrer_id)
 
     if not await check_subscription(bot, user_id):
         await message.answer(
@@ -202,29 +180,125 @@ async def start_cmd(message: types.Message, command: CommandObject, state: FSMCo
         )
         return
 
+    # Telefon raqami yuborilganligini tekshirish
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT phone FROM users WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    conn.close()
+
+    if not row or not row[0]:
+        await state.set_state(PhoneState.waiting_for_phone)
+        await message.answer(
+            "📱 Botdan foydalanish uchun telefon raqamingizni yuboring:",
+            reply_markup=phone_menu
+        )
+        return
+
     await message.answer("Siz asosiy menyudasiz🖥️", reply_markup=main_menu)
-
-# "Tekshirish" tugmasi bosilganda
-@dp.callback_query(F.data == "check_sub")
-async def check_sub_callback(call: types.CallbackQuery):
-    user_id = call.from_user.id
-    if await check_subscription(bot, user_id):
-        await call.message.delete()
-        await call.message.answer("Siz asosiy menyudasiz🖥️", reply_markup=main_menu)
-    else:
-        await call.answer("❌ Siz hali kanalga obuna bo'lmadingiz!", show_alert=True)
-
-# "Olmos ishlash 💎"
-@dp.message(F.text.in_(["Olmos ishlash 💎", "Olmos ishlash"]))
-async def olmos_handler(message: types.Message):
+    # Foydalanuvchi kirish huquqini tekshirish uchun yordamchi funksiya
+async def ensure_access(message: types.Message, state: FSMContext) -> bool:
     user_id = message.from_user.id
     if not await check_subscription(bot, user_id):
         await message.answer("Botdan foydalanishdan oldin majburiy kanalga obuna boʻling ❗", reply_markup=get_sub_keyboard())
+        return False
+    
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT phone FROM users WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    conn.close()
+    
+    if not row or not row[0]:
+        await state.set_state(PhoneState.waiting_for_phone)
+        await message.answer("📱 Botdan foydalanish uchun telefon raqamingizni yuboring:", reply_markup=phone_menu)
+        return False
+    return True
+
+# "Tekshirish" tugmasi bosilganda
+@dp.callback_query(F.data == "check_sub")
+async def check_sub_callback(call: types.CallbackQuery, state: FSMContext):
+    user_id = call.from_user.id
+    if await check_subscription(bot, user_id):
+        await call.message.delete()
+        
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute("SELECT phone FROM users WHERE user_id = ?", (user_id,))
+        row = cursor.fetchone()
+        conn.close()
+
+        if not row or not row[0]:
+            await state.set_state(PhoneState.waiting_for_phone)
+            await call.message.answer(
+                "📱 Botdan foydalanish uchun telefon raqamingizni yuboring:",
+                reply_markup=phone_menu
+            )
+        else:
+            await call.message.answer("Siz asosiy menyudasiz🖥️", reply_markup=main_menu)
+    else:
+        await call.answer("❌ Siz hali kanalga obuna bo'lmadingiz!", show_alert=True)
+
+# Telefon raqamni qabul qilish va referal bonus berish
+@dp.message(PhoneState.waiting_for_phone, F.contact)
+async def receive_phone(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
+    phone = message.contact.phone_number
+    
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    
+    cursor.execute("UPDATE users SET phone = ? WHERE user_id = ?", (phone, user_id))
+    cursor.execute("SELECT referrer_id, bonus_given FROM users WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    
+    if row and row[0] and not row[1]:
+        referrer_id = row[0]
+        today_str = str(date.today())
+        
+        cursor.execute("SELECT today_referrals, last_ref_date FROM users WHERE user_id = ?", (referrer_id,))
+        ref_user = cursor.fetchone()
+        
+        if ref_user:
+            ref_today, ref_date = ref_user[0], ref_user[1]
+            if ref_date != today_str:
+                ref_today = 0
+            ref_today += 1
+            
+            cursor.execute('''
+                UPDATE users 
+                SET balance = balance + 10,
+                    total_referrals = total_referrals + 1,
+                    today_referrals = ?,
+                    last_ref_date = ?
+                WHERE user_id = ?
+            ''', (ref_today, today_str, referrer_id))
+            
+            cursor.execute("UPDATE users SET bonus_given = 1 WHERE user_id = ?", (user_id,))
+            conn.commit()
+            
+            try:
+                await bot.send_message(
+                    referrer_id,
+                    f"🎉 Siz taklif qilgan foydalanuvchi ({message.from_user.full_name}) telefon raqamini tasdiqladi!\nSizga <b>+10 💎</b> berildi!",
+                    parse_mode="HTML"
+                )
+            except Exception:
+                pass
+    else:
+        conn.commit()
+        
+    conn.close()
+    await state.clear()
+    await message.answer("Siz asosiy menyudasiz🖥️", reply_markup=main_menu)
+
+# "Olmos ishlash 💎"
+@dp.message(F.text.in_(["Olmos ishlash 💎", "Olmos ishlash"]))
+async def olmos_handler(message: types.Message, state: FSMContext):
+    if not await ensure_access(message, state):
         return
 
-    full_name = message.from_user.full_name
-    get_or_create_user(user_id, full_name)
-    
+    user_id = message.from_user.id
     balance, total_refs, today_refs = get_user_stats(user_id)
     bot_info = await bot.get_me()
     ref_link = f"https://t.me/{bot_info.username}?start={user_id}"
@@ -243,25 +317,21 @@ async def olmos_handler(message: types.Message):
 
 # "Balans 💎"
 @dp.message(F.text.in_(["Balans 💎", "Balans"]))
-async def balance_handler(message: types.Message):
-    user_id = message.from_user.id
-    if not await check_subscription(bot, user_id):
-        await message.answer("Botdan foydalanishdan oldin majburiy kanalga obuna boʻling ❗", reply_markup=get_sub_keyboard())
+async def balance_handler(message: types.Message, state: FSMContext):
+    if not await ensure_access(message, state):
         return
 
-    get_or_create_user(user_id, message.from_user.full_name)
+    user_id = message.from_user.id
     balance, _, _ = get_user_stats(user_id)
     await message.answer(f"Sizning hisobingizda {balance} olmos bor❗")
 
 # "Olmos yechish 💎"
 @dp.message(F.text.in_(["Olmos yechish 💎", "Olmos yechish"]))
 async def start_withdraw(message: types.Message, state: FSMContext):
-    user_id = message.from_user.id
-    if not await check_subscription(bot, user_id):
-        await message.answer("Botdan foydalanishdan oldin majburiy kanalga obuna boʻling ❗", reply_markup=get_sub_keyboard())
+    if not await ensure_access(message, state):
         return
 
-    get_or_create_user(user_id, message.from_user.full_name)
+    user_id = message.from_user.id
     balance, _, _ = get_user_stats(user_id)
 
     if balance < 10:
@@ -274,9 +344,8 @@ async def start_withdraw(message: types.Message, state: FSMContext):
 # Miqdorni qabul qilish
 @dp.message(WithdrawState.waiting_for_amount)
 async def process_withdraw_amount(message: types.Message, state: FSMContext):
-    if not await check_subscription(bot, message.from_user.id):
+    if not await ensure_access(message, state):
         await state.clear()
-        await message.answer("Botdan foydalanishdan oldin majburiy kanalga obuna boʻling ❗", reply_markup=get_sub_keyboard())
         return
 
     if not message.text.isdigit():
@@ -302,9 +371,8 @@ async def process_withdraw_amount(message: types.Message, state: FSMContext):
 # Yumicoin kodini qabul qilish va avtomatik yuborish
 @dp.message(WithdrawState.waiting_for_code)
 async def process_withdraw_code(message: types.Message, state: FSMContext):
-    if not await check_subscription(bot, message.from_user.id):
+    if not await ensure_access(message, state):
         await state.clear()
-        await message.answer("Botdan foydalanishdan oldin majburiy kanalga obuna boʻling ❗", reply_markup=get_sub_keyboard())
         return
 
     user_data = await state.get_data()
@@ -335,9 +403,8 @@ async def process_withdraw_code(message: types.Message, state: FSMContext):
 
 # /top buyrug'i
 @dp.message(Command("top"))
-async def top_handler(message: types.Message):
-    if not await check_subscription(bot, message.from_user.id):
-        await message.answer("Botdan foydalanishdan oldin majburiy kanalga obuna boʻling ❗", reply_markup=get_sub_keyboard())
+async def top_handler(message: types.Message, state: FSMContext):
+    if not await ensure_access(message, state):
         return
 
     top_users = get_top_referrers()
@@ -358,8 +425,7 @@ async def top_handler(message: types.Message):
 # "🔴 Murojaat ☎️"
 @dp.message(F.text.in_(["🔴 Murojaat ☎️", "Murojaat ☎️"]))
 async def murojaat_button(message: types.Message, state: FSMContext):
-    if not await check_subscription(bot, message.from_user.id):
-        await message.answer("Botdan foydalanishdan oldin majburiy kanalga obuna boʻling ❗", reply_markup=get_sub_keyboard())
+    if not await ensure_access(message, state):
         return
 
     await state.set_state(MurojaatState.waiting_for_text)
@@ -421,4 +487,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-            
+    
