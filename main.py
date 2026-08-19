@@ -9,7 +9,7 @@ from aiogram.filters import CommandStart, CommandObject, Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from aiohttp import web
 
 BOT_TOKEN = "8825351774:AAFI7D9WaBz3fcMV5fClnWCrOmWuLJqn0ug"
@@ -17,6 +17,9 @@ ADMIN_ID = 7803078084
 DARKO_API_KEY = "yc_live_5286afa187f7b3d0a172d0e6c3e0e829cc65a48faf7b2748"
 
 DB_NAME = "bot_database.db"
+
+# Majburiy kanallar ro'yxati
+CHANNELS = ["@Minecoine_kanal"]
 
 # Database yaratish
 def init_db():
@@ -108,6 +111,26 @@ def get_top_referrers():
     conn.close()
     return rows
 
+# Kanalga obuna bo'linganini tekshirish
+async def check_subscription(bot: Bot, user_id: int) -> bool:
+    for channel in CHANNELS:
+        try:
+            member = await bot.get_chat_member(chat_id=channel, user_id=user_id)
+            if member.status in ["left", "kicked"]:
+                return False
+        except Exception:
+            return False
+    return True
+
+# Obuna tugmasi
+def get_sub_keyboard():
+    buttons = []
+    for ch in CHANNELS:
+        ch_url = ch.replace("@", "https://t.me/")
+        buttons.append([InlineKeyboardButton(text="📢 Kanalga obuna bo'lish", url=ch_url)])
+    buttons.append([InlineKeyboardButton(text="✅ Tekshirish", callback_data="check_sub")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
 # Darko API orqali olmos yuborish
 async def send_darko_diamonds(yumi_code: str, amount: int):
     url = "https://api.darko.uz/v1/withdraw"
@@ -172,12 +195,33 @@ async def start_cmd(message: types.Message, command: CommandObject, state: FSMCo
         except Exception:
             pass
 
-    await message.answer("Assalomu alaykum! Kerakli bo'limni tanlang:", reply_markup=main_menu)
+    if not await check_subscription(bot, user_id):
+        await message.answer(
+            "Botdan foydalanishdan oldin majburiy kanalga obuna boʻling ❗",
+            reply_markup=get_sub_keyboard()
+        )
+        return
+
+    await message.answer("Siz asosiy menyudasiz🖥️", reply_markup=main_menu)
+
+# "Tekshirish" tugmasi bosilganda
+@dp.callback_query(F.data == "check_sub")
+async def check_sub_callback(call: types.CallbackQuery):
+    user_id = call.from_user.id
+    if await check_subscription(bot, user_id):
+        await call.message.delete()
+        await call.message.answer("Siz asosiy menyudasiz🖥️", reply_markup=main_menu)
+    else:
+        await call.answer("❌ Siz hali kanalga obuna bo'lmadingiz!", show_alert=True)
 
 # "Olmos ishlash 💎"
 @dp.message(F.text.in_(["Olmos ishlash 💎", "Olmos ishlash"]))
 async def olmos_handler(message: types.Message):
     user_id = message.from_user.id
+    if not await check_subscription(bot, user_id):
+        await message.answer("Botdan foydalanishdan oldin majburiy kanalga obuna boʻling ❗", reply_markup=get_sub_keyboard())
+        return
+
     full_name = message.from_user.full_name
     get_or_create_user(user_id, full_name)
     
@@ -201,6 +245,10 @@ async def olmos_handler(message: types.Message):
 @dp.message(F.text.in_(["Balans 💎", "Balans"]))
 async def balance_handler(message: types.Message):
     user_id = message.from_user.id
+    if not await check_subscription(bot, user_id):
+        await message.answer("Botdan foydalanishdan oldin majburiy kanalga obuna boʻling ❗", reply_markup=get_sub_keyboard())
+        return
+
     get_or_create_user(user_id, message.from_user.full_name)
     balance, _, _ = get_user_stats(user_id)
     await message.answer(f"Sizning hisobingizda {balance} olmos bor❗")
@@ -209,6 +257,10 @@ async def balance_handler(message: types.Message):
 @dp.message(F.text.in_(["Olmos yechish 💎", "Olmos yechish"]))
 async def start_withdraw(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
+    if not await check_subscription(bot, user_id):
+        await message.answer("Botdan foydalanishdan oldin majburiy kanalga obuna boʻling ❗", reply_markup=get_sub_keyboard())
+        return
+
     get_or_create_user(user_id, message.from_user.full_name)
     balance, _, _ = get_user_stats(user_id)
 
@@ -222,6 +274,11 @@ async def start_withdraw(message: types.Message, state: FSMContext):
 # Miqdorni qabul qilish
 @dp.message(WithdrawState.waiting_for_amount)
 async def process_withdraw_amount(message: types.Message, state: FSMContext):
+    if not await check_subscription(bot, message.from_user.id):
+        await state.clear()
+        await message.answer("Botdan foydalanishdan oldin majburiy kanalga obuna boʻling ❗", reply_markup=get_sub_keyboard())
+        return
+
     if not message.text.isdigit():
         await message.answer("iltimos miqdorini yozib yuboring ❗")
         return
@@ -245,6 +302,11 @@ async def process_withdraw_amount(message: types.Message, state: FSMContext):
 # Yumicoin kodini qabul qilish va avtomatik yuborish
 @dp.message(WithdrawState.waiting_for_code)
 async def process_withdraw_code(message: types.Message, state: FSMContext):
+    if not await check_subscription(bot, message.from_user.id):
+        await state.clear()
+        await message.answer("Botdan foydalanishdan oldin majburiy kanalga obuna boʻling ❗", reply_markup=get_sub_keyboard())
+        return
+
     user_data = await state.get_data()
     amount = user_data.get("withdraw_amount")
     yumi_code = message.text.strip()
@@ -274,6 +336,10 @@ async def process_withdraw_code(message: types.Message, state: FSMContext):
 # /top buyrug'i
 @dp.message(Command("top"))
 async def top_handler(message: types.Message):
+    if not await check_subscription(bot, message.from_user.id):
+        await message.answer("Botdan foydalanishdan oldin majburiy kanalga obuna boʻling ❗", reply_markup=get_sub_keyboard())
+        return
+
     top_users = get_top_referrers()
     if not top_users:
         await message.answer("🏆 Hali hech kim referal taklif qilmagan.")
@@ -292,6 +358,10 @@ async def top_handler(message: types.Message):
 # "🔴 Murojaat ☎️"
 @dp.message(F.text.in_(["🔴 Murojaat ☎️", "Murojaat ☎️"]))
 async def murojaat_button(message: types.Message, state: FSMContext):
+    if not await check_subscription(bot, message.from_user.id):
+        await message.answer("Botdan foydalanishdan oldin majburiy kanalga obuna boʻling ❗", reply_markup=get_sub_keyboard())
+        return
+
     await state.set_state(MurojaatState.waiting_for_text)
     await message.answer("Murojaatingizni yozib yuboring ❗")
 
@@ -351,4 +421,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-        
+            
