@@ -8,7 +8,7 @@ from aiogram.types import (
     InlineKeyboardButton
 )
 
-BOT_TOKEN = 8961743918:AAFYT7ALFuDCN7sqqRrSKcvNgpLbLFVISBc
+BOT_TOKEN = 8825351774:AAFI7D9WaBz3fcMV5fClnWCrOmWuLJqn0ug
 ADMIN_ID = 7803078084
 
 bot = Bot(token=BOT_TOKEN)
