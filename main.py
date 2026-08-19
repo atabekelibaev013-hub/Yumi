@@ -549,4 +549,214 @@ async def receive_murojaat(message: types.Message, state: FSMContext):
         f"<i>👇 Javob berish uchun ushbu xabarga Reply (Javob bering) qiling.</i>"
     )
     await bot.send_message(ADMIN_ID, admin_msg, parse_mode="HTML")
+# --- ADMIN CALLBACKLARI, TO'LOV, BAN VA ADMIN REPLY ---
+
+# Admin panelining hisob o'zgartirish handlerlari
+@dp.message(F.text == "👨‍💻 Admin Panel")
+async def admin_panel(message: types.Message):
+    if message.from_user.id == ADMIN_ID:
+        await message.answer("Admin panelga xush kelibsiz!", reply_markup=admin_menu)
+
+@dp.message(F.text == "⬅️ Bosh menyu")
+async def back_to_main(message: types.Message):
+    await message.answer("Asosiy menyu:", reply_markup=get_main_menu(message.from_user.id))
+
+@dp.message(F.text == "💰 Hisob")
+async def ask_for_user(message: types.Message, state: FSMContext):
+    if message.from_user.id == ADMIN_ID:
+        await state.set_state(AdminPanelState.waiting_for_identifier)
+        await message.answer("Foydalanuvchi ID raqami yoki @username ni yuboring:")
+
+@dp.message(AdminPanelState.waiting_for_identifier)
+async def process_user_search(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    identifier = message.text.strip()
+    user_info = get_user_by_id_or_username(identifier)
+    
+    if not user_info:
+        await message.answer("❌ Foydalanuvchi topilmadi. ID yoki username ni to'g'ri kiriting:")
+        return
+
+    user_id, full_name, username, phone, balance = user_info
+    
+    text = (
+        f"👤 <b>Foydalanuvchi ma'lumotlari:</b>\n\n"
+        f"🆔 <b>ID:</b> <code>{user_id}</code>\n"
+        f"📛 <b>Ism:</b> {full_name}\n"
+        f"🔗 <b>Username:</b> @{username if username else 'Mavjud emas'}\n"
+        f"📱 <b>Nomer:</b> {phone if phone else 'Mavjud emas'}\n"
+        f"💎 <b>Hisobindagi olmos:</b> {balance} ta"
+    )
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✏️ Hisobni o'zgartirish", callback_data=f"edit_bal:{user_id}")]
+    ])
+    
+    await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
+    await state.clear()
+
+@dp.callback_query(F.data.startswith("edit_bal:"))
+async def edit_balance_prompt(callback: types.CallbackQuery, state: FSMContext):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("Ruxsat berilmagan! ❌", show_alert=True)
+        return
+
+    target_user_id = int(callback.data.split(":")[1])
+    await state.update_data(target_user_id=target_user_id)
+    await state.set_state(AdminPanelState.waiting_for_new_balance)
+    await callback.message.answer("Foydalanuvchi hisobini qancha qilmoqchisiz? Son kiritib yuboring:")
+    await callback.answer()
+
+@dp.message(AdminPanelState.waiting_for_new_balance)
+async def process_new_balance(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    if not message.text.isdigit():
+        await message.answer("Iltimos, faqat butun son kiriting!")
+        return
+
+    new_balance = int(message.text)
+    user_data = await state.get_data()
+    target_user_id = user_data.get("target_user_id")
+
+    set_user_balance(target_user_id, new_balance)
+    await state.clear()
+
+    await message.answer(f"✅ Foydalanuvchi (ID: <code>{target_user_id}</code>) hisobi <b>{new_balance}</b> olmos qilib belgilandi!", parse_mode="HTML")
+
+    try:
+        await bot.send_message(
+            target_user_id,
+            f"🔔 Adminga ko'ra hisobingiz o'zgartirildi! Hozirgi balansingiz: <b>{new_balance} 💎</b>",
+            parse_mode="HTML"
+        )
+    except Exception:
+        pass
+
+# --- TO'LOV SO'ROVINI TASDIQLASH (DARKO API AUTO-TRANSFER) ---
+@dp.callback_query(F.data.startswith("wd_app:"))
+async def approve_withdrawal(call: types.CallbackQuery):
+    if call.from_user.id != ADMIN_ID:
+        return
+
+    req_id = int(call.data.split(":")[1])
+    wd_data = get_withdrawal(req_id)
+
+    if not wd_data:
+        await call.answer("So'rov topilmadi!", show_alert=True)
+        return
+
+    user_id, amount, yumi_code, status = wd_data
+
+    if status != "pending":
+        await call.answer("Bu so'rov allaqachon ko'rib chiqilgan!", show_alert=True)
+        return
+
+    await call.message.edit_text(call.message.text + "\n\n⏳ Yumicoin API orqali olmos yuborilmoqda...")
+
+    success, api_msg = await send_darko_diamonds(yumi_code, amount)
+
+    if success:
+        update_withdrawal_status(req_id, "approved")
+        await call.message.edit_text(
+            call.message.text.replace("⏳ Yumicoin API orqali olmos yuborilmoqda...", "") + "\n\n✅ <b>TASDIQLANDI</b> (Olmos Yumicoin hisobiga o'tkazildi)",
+            parse_mode="HTML"
+        )
+        try:
+            await bot.send_message(user_id, f"✅ So'rovingiz tasdiqlandi! Yumicoin hisobingizga <b>{amount} olmos</b> o'tkazib berildi!", parse_mode="HTML")
+        except Exception:
+            pass
+    else:
+        add_balance(user_id, amount)
+        update_withdrawal_status(req_id, "failed")
+        await call.message.edit_text(
+            call.message.text.replace("⏳ Yumicoin API orqali olmos yuborilmoqda...", "") + f"\n\n❌ <b>API XATOLIK:</b> {api_msg}\n(Olmos balansga qaytarildi)",
+            parse_mode="HTML"
+        )
+
+# --- TO'LOV SO'ROVINI RAD ETISH ---
+@dp.callback_query(F.data.startswith("wd_rej:"))
+async def reject_withdrawal(call: types.CallbackQuery):
+    if call.from_user.id != ADMIN_ID:
+        return
+
+    req_id = int(call.data.split(":")[1])
+    wd_data = get_withdrawal(req_id)
+
+    if not wd_data:
+        await call.answer("So'rov topilmadi!", show_alert=True)
+        return
+
+    user_id, amount, yumi_code, status = wd_data
+
+    if status != "pending":
+        await call.answer("Bu so'rov allaqachon ko'rib chiqilgan!", show_alert=True)
+        return
+
+    add_balance(user_id, amount)
+    update_withdrawal_status(req_id, "rejected")
+
+    await call.message.edit_text(call.message.text + "\n\n❌ <b>RAD ETILDI</b> (Olmos qaytarib berildi)", parse_mode="HTML")
+    try:
+        await bot.send_message(user_id, f"❌ So'rovingiz rad etildi! <b>{amount} olmos</b> balansizga qaytarildi.", parse_mode="HTML")
+    except Exception:
+        pass
+
+# --- BAN BERISH ---
+@dp.callback_query(F.data.startswith("ban_usr:"))
+async def ban_user_callback(call: types.CallbackQuery):
+    if call.from_user.id != ADMIN_ID:
+        return
+
+    target_user_id = int(call.data.split(":")[1])
+    ban_user_db(target_user_id)
+    await call.answer("Foydalanuvchi bloklandi! 🚫", show_alert=True)
+    await call.message.edit_text(call.message.text + f"\n\n🚫 <b>FOYDALANUVCHI BLOKLANDI (ID: {target_user_id})</b>", parse_mode="HTML")
+    try:
+        await bot.send_message(target_user_id, "Siz botdan foydalanishdan bloklandingiz ❌")
+    except Exception:
+        pass
+
+# --- ADMINDAN MUROJAATGA JAVOB BERISH (REPLY ORQALI) ---
+@dp.message(F.chat.id == ADMIN_ID, F.reply_to_message)
+async def admin_reply(message: types.Message):
+    reply_text = message.reply_to_message.text or message.reply_to_message.caption
+    if not reply_text:
+        return
+
+    match = re.search(r"🆔 ID:\s*(\d+)", reply_text)
+    if match:
+        target_user_id = int(match.group(1))
+        try:
+            await bot.send_message(
+                chat_id=target_user_id,
+                text=f"👨‍💻 <b>Admindan javob:</b>\n\n{message.text}",
+                parse_mode="HTML"
+            )
+            await message.reply("✅ Javobingiz foydalanuvchiga yuborildi!")
+        except Exception as e:
+            await message.reply(f"❌ Xabarni yuborib bo'lmadi: {e}")
+
+# --- WEB SERVER (Render 24/7) VA BOTNI ISHGA TUSHIRISH ---
+async def handle(request):
+    return web.Response(text="Bot 24/7 rejimida muvaffaqiyatli ishlayapti!")
+
+async def main():
+    init_db()
+    app = web.Application()
+    app.router.add_get("/", handle)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 8080))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+
+    print("Bot muvaffaqiyatli ishga tushdi!")
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
 
