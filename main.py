@@ -925,4 +925,281 @@ async def games_start(message: types.Message, state: FSMContext):
         return
 
     await message.answer("🎮 Kerakli o'yinni tanlang:", reply_markup=get_games_inline_keyboard())
+# --- O'YINLAR LOGIKASI ---
 
+@dp.callback_query(F.data.startswith("game_select:"))
+async def game_selected(call: types.CallbackQuery, state: FSMContext):
+    game_type = call.data.split(":")[1]
+    await state.update_data(selected_game=game_type)
+    await state.set_state(GameState.waiting_for_bet)
+    
+    balance, _, _ = get_user_stats(call.from_user.id)
+    await call.message.edit_text(
+        f"🎮 O'yin tanlandi: <b>{game_type.upper()}</b>\n"
+        f"💰 Balansingiz: <b>{balance} 💎</b>\n\n"
+        f"Tikmoqchi bo'lgan olmos miqdorini yozing (kamida 5 💎):",
+        parse_mode="HTML"
+    )
+
+@dp.message(GameState.waiting_for_bet)
+async def process_game_bet(message: types.Message, state: FSMContext):
+    if not message.text or not message.text.isdigit():
+        await message.answer("Iltimos, faqat musbat raqam kiriting ❗")
+        return
+
+    bet = int(message.text)
+    user_id = message.from_user.id
+    balance, _, _ = get_user_stats(user_id)
+
+    if bet < 5:
+        await message.answer("Minimal tikish miqdori 5 💎!")
+        return
+
+    if bet > balance:
+        await message.answer(f"Mablag' yetarli emas! Sizning balansingiz: {balance} 💎")
+        return
+
+    data = await state.get_data()
+    game_type = data.get("selected_game", "dice")
+    await state.clear()
+
+    deduct_balance(user_id, bet)
+
+    dice_emoji_map = {
+        "slots": "🎰",
+        "bowling": "🎳",
+        "football": "⚽",
+        "dice": "🎲",
+        "darts": "🎯",
+        "basketball": "🏀"
+    }
+
+    emoji = dice_emoji_map.get(game_type, "🎲")
+    msg = await message.answer_dice(emoji=emoji)
+    await asyncio.sleep(3)
+
+    value = msg.dice.value
+    win = False
+    multiplier = 0
+
+    if game_type in ["slots", "dice"]:
+        if value in [6, 64]:
+            win = True
+            multiplier = 2
+    elif game_type in ["bowling", "darts", "basketball"]:
+        if value >= 5:
+            win = True
+            multiplier = 1.8
+    elif game_type == "football":
+        if value in [3, 4, 5]:
+            win = True
+            multiplier = 1.5
+
+    if win:
+        win_amount = int(bet * multiplier)
+        add_balance(user_id, win_amount)
+        await message.answer(f"🎉 Qoyil! Siz g'olib bo'ldingiz va <b>+{win_amount} 💎</b> yutib oldingiz!", parse_mode="HTML")
+    else:
+        await message.answer(f"😔 Afsuski, yutqazdingiz. <b>-{bet} 💎</b> yo'qotildi.", parse_mode="HTML")
+
+# --- ADMIN PANEL HODISALARI VA MIQDOR SOZLAMALARI ---
+
+@dp.message(F.text == "👨‍💻 Admin Panel")
+async def admin_panel_cmd(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    await message.answer("👨‍💻 Admin panelga xush kelibsiz!", reply_markup=admin_menu)
+
+@dp.message(F.text == "⬅️ Bosh menyu")
+async def back_to_main_menu(message: types.Message, state: FSMContext):
+    await state.clear()
+    await message.answer("Siz asosiy menyudasiz🖥️", reply_markup=get_main_menu(message.from_user.id))
+
+@dp.message(F.text == "💰 Hisob")
+async def admin_change_balance_start(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    await state.set_state(AdminPanelState.waiting_for_identifier)
+    await message.answer("Foydalanuvchi ID raqamini kiriting:")
+
+@dp.message(AdminPanelState.waiting_for_identifier)
+async def process_admin_userid(message: types.Message, state: FSMContext):
+    if not message.text.isdigit():
+        await message.answer("ID raqam faqat sonlardan iborat bo'lishi kerak!")
+        return
+    await state.update_data(target_user_id=int(message.text))
+    await state.set_state(AdminPanelState.waiting_for_new_balance)
+    await message.answer("Yangi balans miqdorini kiriting (masalan: 500 yoki -100):")
+
+@dp.message(AdminPanelState.waiting_for_new_balance)
+async def process_admin_new_balance(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    target_id = data.get("target_user_id")
+    try:
+        amount = int(message.text)
+        add_balance(target_id, amount)
+        await state.clear()
+        await message.answer(f"✅ Foydalanuvchi (<code>{target_id}</code>) balansiga {amount} 💎 qo'shildi/ayirildi!", parse_mode="HTML")
+    except ValueError:
+        await message.answer("Iltimos, to'g'ri son kiriting!")
+
+@dp.message(F.text == "Ref bonus🔗")
+async def admin_ref_bonus_start(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    curr_bonus = get_setting("ref_bonus", "10")
+    await state.set_state(AdminPanelState.waiting_for_ref_bonus)
+    await message.answer(f"Hozirgi referal bonusi: {curr_bonus} 💎\nYangi bonus miqdorini kiriting:")
+
+@dp.message(AdminPanelState.waiting_for_ref_bonus)
+async def process_admin_ref_bonus(message: types.Message, state: FSMContext):
+    if not message.text.isdigit():
+        await message.answer("Faqat musbat raqam kiriting!")
+        return
+    set_setting("ref_bonus", message.text.strip())
+    await state.clear()
+    await message.answer(f"✅ Referal bonusi {message.text.strip()} 💎 ga o'zgartirildi!")
+
+@dp.message(F.text == "Reklama")
+async def admin_broadcast_start(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    await state.set_state(AdminPanelState.waiting_for_broadcast)
+    await message.answer("Barcha foydalanuvchilarga yubormoqchi bo'lgan xabaringizni (rasm yoki matn) yuboring:")
+
+@dp.message(AdminPanelState.waiting_for_broadcast)
+async def process_admin_broadcast(message: types.Message, state: FSMContext):
+    await state.clear()
+    await message.answer("📢 Reklama tarqatish boshlandi...")
+
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id FROM users WHERE is_banned = 0")
+    users = cursor.fetchall()
+    conn.close()
+
+    count = 0
+    for u in users:
+        try:
+            await message.copy_to(u[0])
+            count += 1
+            await asyncio.sleep(0.05)
+        except Exception:
+            pass
+
+    await message.answer(f"✅ Reklama {count} ta foydalanuvchiga muvaffaqiyatli yuborildi!")
+
+# --- MIQDOR (PUL VA STARS NARXLARINI O'ZGARTIRISH) ---
+
+@dp.message(F.text == "Miqdor")
+async def admin_miqdor_menu(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Pul paketlarini yangilash 💸", callback_data="set_pkg:pul")],
+        [InlineKeyboardButton(text="Stars paketlarini yangilash ⭐", callback_data="set_pkg:stars")]
+    ])
+    await message.answer("⚙️ Qaysi to'lov turi paketlarini o'zgartirmoqchisiz?", reply_markup=kb)
+
+@dp.callback_query(F.data.startswith("set_pkg:"))
+async def process_set_pkg_start(call: types.CallbackQuery, state: FSMContext):
+    if call.from_user.id != ADMIN_ID:
+        return
+
+    pkg_type = call.data.split(":")[1]
+    await state.update_data(pkg_type=pkg_type)
+
+    if pkg_type == "pul":
+        await state.set_state(AdminMiqdorState.waiting_for_pul_diamonds)
+        await call.message.edit_text("💸 <b>Pul paketi sozlash:</b>\n\nOlmos miqdorini kiriting (Masalan: 500):", parse_mode="HTML")
+    else:
+        await state.set_state(AdminMiqdorState.waiting_for_stars_count)
+        await call.message.edit_text("⭐ <b>Stars paketi sozlash:</b>\n\nStars miqdorini kiriting (Masalan: 15):", parse_mode="HTML")
+
+# PUL PAKETI UPDATE
+@dp.message(AdminMiqdorState.waiting_for_pul_diamonds)
+async def process_pul_dia(message: types.Message, state: FSMContext):
+    if not message.text.isdigit():
+        await message.answer("Faqat raqam kiriting!")
+        return
+    await state.update_data(new_pul_dia=message.text.strip())
+    await state.set_state(AdminMiqdorState.waiting_for_pul_price)
+    await message.answer("Ushbu olmos paketi uchun so'mdagi narxni kiriting (Masalan: 5000):")
+
+@dp.message(AdminMiqdorState.waiting_for_pul_price)
+async def process_pul_price(message: types.Message, state: FSMContext):
+    if not message.text.isdigit():
+        await message.answer("Faqat raqam kiriting!")
+        return
+
+    data = await state.get_data()
+    dia = data.get("new_pul_dia")
+    price = int(message.text.strip())
+
+    curr_json = get_setting("pul_packages", "{}")
+    try:
+        pkgs = json.loads(curr_json)
+    except Exception:
+        pkgs = {}
+
+    pkgs[str(dia)] = price
+    set_setting("pul_packages", json.dumps(pkgs))
+
+    await state.clear()
+    await message.answer(f"✅ Yangi Pul paketi saqlandi:\n<b>{dia} 💎 — {price} so'm</b>", parse_mode="HTML")
+
+# STARS PAKETI UPDATE
+@dp.message(AdminMiqdorState.waiting_for_stars_count)
+async def process_stars_count(message: types.Message, state: FSMContext):
+    if not message.text.isdigit():
+        await message.answer("Faqat raqam kiriting!")
+        return
+    await state.update_data(new_stars_count=message.text.strip())
+    await state.set_state(AdminMiqdorState.waiting_for_stars_diamonds)
+    await message.answer("Ushbu Stars uchun beriladigan olmos miqdorini kiriting (Masalan: 260):")
+
+@dp.message(AdminMiqdorState.waiting_for_stars_diamonds)
+async def process_stars_dia(message: types.Message, state: FSMContext):
+    if not message.text.isdigit():
+        await message.answer("Faqat raqam kiriting!")
+        return
+
+    data = await state.get_data()
+    stars = data.get("new_stars_count")
+    dia = int(message.text.strip())
+
+    curr_json = get_setting("stars_packages", "{}")
+    try:
+        pkgs = json.loads(curr_json)
+    except Exception:
+        pkgs = {}
+
+    pkgs[str(stars)] = dia
+    set_setting("stars_packages", json.dumps(pkgs))
+
+    await state.clear()
+    await message.answer(f"✅ Yangi Stars paketi saqlandi:\n<b>{stars} ⭐ — {dia} 💎</b>", parse_mode="HTML")
+
+# --- MAJBURITY OBUNANI TEKSHIRISH FUNKSIYASI ---
+
+async def check_subscription(bot_obj: Bot, user_id: int) -> bool:
+    for ch in CHANNELS:
+        try:
+            member = await bot_obj.get_chat_member(chat_id=ch, user_id=user_id)
+            if member.status in ["left", "kicked"]:
+                return False
+        except Exception:
+            pass
+    return True
+
+# --- BOTNI ISHGA TUSHIRISH ---
+
+async def main():
+    init_db()
+    print("Bot muvaffaqiyatli ishga tushdi! 🚀")
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
+    
