@@ -654,4 +654,275 @@ async def process_buy_proof(message: types.Message, state: FSMContext):
         reply_markup=get_admin_purchase_keyboard(req_id, user_id),
         parse_mode="HTML"
 )
-            
+# --- TO'LOVLARNI TASDIQLASH / RAD ETISH / BAN BERISH (ADMIN CALLBACKS) ---
+
+@dp.callback_query(F.data.startswith("app_buy:"))
+async def approve_purchase(call: types.CallbackQuery):
+    if call.from_user.id != ADMIN_ID:
+        return
+
+    req_id = int(call.data.split(":")[1])
+    purchase = get_purchase(req_id)
+
+    if not purchase:
+        await call.answer("Ariz ma'lumotlari topilmadi ❌", show_alert=True)
+        return
+
+    user_id, pay_type, diamonds, price, status = purchase
+
+    if status != 'pending':
+        await call.answer("Ushbu ariza ko'rib chiqilgan!", show_alert=True)
+        return
+
+    update_purchase_status(req_id, 'approved')
+    add_balance(user_id, diamonds)
+
+    await call.message.edit_caption(
+        caption=call.message.caption + "\n\n✅ <b>Holat: TASDIQLANDI</b>",
+        parse_mode="HTML"
+    )
+
+    try:
+        await bot.send_message(
+            user_id,
+            f"🎉 Tabriklaymiz! Sizning <b>{diamonds} 💎</b> miqdoridagi xaridingiz tasdiqlandi va hisobingizga qo'shildi!",
+            parse_mode="HTML"
+        )
+    except Exception:
+        pass
+
+    await call.answer("Xarid tasdiqlandi va olmoslar qo'shildi! ✅")
+
+@dp.callback_query(F.data.startswith("rej_buy:"))
+async def reject_purchase(call: types.CallbackQuery):
+    if call.from_user.id != ADMIN_ID:
+        return
+
+    req_id = int(call.data.split(":")[1])
+    purchase = get_purchase(req_id)
+
+    if not purchase:
+        await call.answer("Ariza topilmadi ❌", show_alert=True)
+        return
+
+    user_id, pay_type, diamonds, price, status = purchase
+
+    if status != 'pending':
+        await call.answer("Ushbu ariza ko'rib chiqilgan!", show_alert=True)
+        return
+
+    update_purchase_status(req_id, 'rejected')
+
+    await call.message.edit_caption(
+        caption=call.message.caption + "\n\n❌ <b>Holat: RAD ETILDI</b>",
+        parse_mode="HTML"
+    )
+
+    try:
+        await bot.send_message(
+            user_id,
+            f"❌ Sizning <b>{diamonds} 💎</b> miqdoridagi to'lov arizangiz rad etildi.",
+            parse_mode="HTML"
+        )
+    except Exception:
+        pass
+
+    await call.answer("Ariza rad etildi ❌")
+
+@dp.callback_query(F.data.startswith("ban_usr:"))
+async def ban_user_callback(call: types.CallbackQuery):
+    if call.from_user.id != ADMIN_ID:
+        return
+
+    user_id = int(call.data.split(":")[1])
+    
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET is_banned = 1 WHERE user_id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+
+    await call.answer(f"Foydalanuvchi ({user_id}) bloklandi! 🚫", show_alert=True)
+    try:
+        await bot.send_message(user_id, "Siz botdan foydalanishdan bloklandingiz 🚫")
+    except Exception:
+        pass
+
+# --- OLMOS YECHISH 💎 ---
+
+@dp.message(F.text == "Olmos yechish 💎")
+async def withdraw_start(message: types.Message, state: FSMContext):
+    if not await ensure_access(message, state):
+        return
+
+    balance, _, _ = get_user_stats(message.from_user.id)
+    if balance < 100:
+        await message.answer(f"⚠️ Yechib olish uchun minimal summa: 100 💎\nSizning balansingiz: {balance} 💎")
+        return
+
+    await state.set_state(WithdrawState.waiting_for_amount)
+    await message.answer(f"Balansingiz: {balance} 💎\n\nQancha olmos yechib olmoqchisiz? Miqdorni kiriting:")
+
+@dp.message(WithdrawState.waiting_for_amount)
+async def process_withdraw_amount(message: types.Message, state: FSMContext):
+    if not message.text or not message.text.isdigit():
+        await message.answer("Iltimos, faqat raqam kiriting ❗")
+        return
+
+    amount = int(message.text)
+    balance, _, _ = get_user_stats(message.from_user.id)
+
+    if amount < 100:
+        await message.answer("Minimal yechish miqdori 100 💎")
+        return
+
+    if amount > balance:
+        await message.answer(f"Mablag' yetarli emas! Sizning balansingiz: {balance} 💎")
+        return
+
+    await state.update_data(withdraw_amount=amount)
+    await state.set_state(WithdrawState.waiting_for_code)
+    await message.answer("Olmos o'tkaziladigan Yumi ID kodingizni kiriting:")
+
+@dp.message(WithdrawState.waiting_for_code)
+async def process_withdraw_code(message: types.Message, state: FSMContext):
+    code = message.text.strip()
+    data = await state.get_data()
+    amount = data.get("withdraw_amount")
+    user_id = message.from_user.id
+
+    deduct_balance(user_id, amount)
+
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO withdrawals (user_id, amount, yumi_code) VALUES (?, ?, ?)", (user_id, amount, code))
+    req_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+
+    await state.clear()
+    await message.answer(" Yechib olish arizangiz adminga yuborildi. Tez orada ko'rib chiqiladi! ⏳")
+
+    username = f"@{message.from_user.username}" if message.from_user.username else "Mavjud emas"
+    admin_msg = (
+        f"📤 <b>Yangi olmos yechish arizasi!</b>\n\n"
+        f"👤 Foydalanuvchi: {username}\n"
+        f"🆔 ID: <code>{user_id}</code>\n"
+        f"💎 Miqdor: {amount} 💎\n"
+        f"🔑 Yumi kodi: <code>{code}</code>"
+    )
+
+    await bot.send_message(
+        ADMIN_ID,
+        admin_msg,
+        reply_markup=get_admin_withdraw_keyboard(req_id, user_id),
+        parse_mode="HTML"
+    )
+
+@dp.callback_query(F.data.startswith("wd_app:"))
+async def approve_withdraw(call: types.CallbackQuery):
+    if call.from_user.id != ADMIN_ID:
+        return
+
+    req_id = int(call.data.split(":")[1])
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id, amount, status FROM withdrawals WHERE id = ?", (req_id,))
+    row = cursor.fetchone()
+
+    if not row or row[2] != 'pending':
+        await call.answer("Ariza allaqachon ko'rib chiqilgan!", show_alert=True)
+        conn.close()
+        return
+
+    user_id, amount = row[0], row[1]
+    cursor.execute("UPDATE withdrawals SET status = 'approved' WHERE id = ?", (req_id,))
+    conn.commit()
+    conn.close()
+
+    await call.message.edit_text(call.message.text + "\n\n✅ <b>Holat: TASDIQLANDI</b>", parse_mode="HTML")
+    try:
+        await bot.send_message(user_id, f"🎉 Sizning <b>{amount} 💎</b> yechib olish arizangiz tasdiqlandi va o'tkazib berildi!", parse_mode="HTML")
+    except Exception:
+        pass
+    await call.answer("Tasdiqlandi! ✅")
+
+@dp.callback_query(F.data.startswith("wd_rej:"))
+async def reject_withdraw(call: types.CallbackQuery):
+    if call.from_user.id != ADMIN_ID:
+        return
+
+    req_id = int(call.data.split(":")[1])
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id, amount, status FROM withdrawals WHERE id = ?", (req_id,))
+    row = cursor.fetchone()
+
+    if not row or row[2] != 'pending':
+        await call.answer("Ariza allaqachon ko'rib chiqilgan!", show_alert=True)
+        conn.close()
+        return
+
+    user_id, amount = row[0], row[1]
+    cursor.execute("UPDATE withdrawals SET status = 'rejected' WHERE id = ?", (req_id,))
+    add_balance(user_id, amount)
+    conn.commit()
+    conn.close()
+
+    await call.message.edit_text(call.message.text + "\n\n❌ <b>Holat: RAD ETILDI (Balans qaytarildi)</b>", parse_mode="HTML")
+    try:
+        await bot.send_message(user_id, f"❌ Sizning <b>{amount} 💎</b> yechish arizangiz rad etildi va balansingizga qaytarildi.", parse_mode="HTML")
+    except Exception:
+        pass
+    await call.answer("Rad etildi! ❌")
+
+# --- OLMOS ISHLASH 💎 ---
+
+@dp.message(F.text == "Olmos ishlash 💎")
+async def earn_diamonds_handler(message: types.Message, state: FSMContext):
+    if not await ensure_access(message, state):
+        return
+
+    user_id = message.from_user.id
+    bot_info = await bot.get_me()
+    ref_link = f"https://t.me/{bot_info.username}?start={user_id}"
+    ref_bonus = get_setting("ref_bonus", "10")
+
+    text = (
+        f"🔗 <b>Sizning taklif havolangiz:</b>\n<code>{ref_link}</code>\n\n"
+        f"👥 Har bir taklif qilgan do'stingiz uchun <b>{ref_bonus} 💎</b> beriladi!"
+    )
+    await message.answer(text, parse_mode="HTML")
+
+# --- MUROJAAT ☎️ ---
+
+@dp.message(F.text == "Murojaat ☎️")
+async def contact_start(message: types.Message, state: FSMContext):
+    if not await ensure_access(message, state):
+        return
+
+    await state.set_state(MurojaatState.waiting_for_text)
+    await message.answer("☎️ Adminlarimizga yubormoqchi bo'lgan xabaringizni yozing:")
+
+@dp.message(MurojaatState.waiting_for_text)
+async def process_murojaat(message: types.Message, state: FSMContext):
+    await state.clear()
+    user_id = message.from_user.id
+    username = f"@{message.from_user.username}" if message.from_user.username else "Mavjud emas"
+
+    await message.answer("Xabaringiz adminga yetkazildi ✅")
+    await bot.send_message(
+        ADMIN_ID,
+        f"📩 <b>Yangi Murojaat!</b>\n\n👤 Foydalanuvchi: {username}\n🆔 ID: <code>{user_id}</code>\n\n📝 Xabar: {message.text}",
+        parse_mode="HTML"
+    )
+
+# --- O'YINLAR 🎮 ---
+
+@dp.message(F.text.in_(["Oʻyin 🎮", "O'yin 🎮"]))
+async def games_start(message: types.Message, state: FSMContext):
+    if not await ensure_access(message, state):
+        return
+
+    await message.answer("🎮 Kerakli o'yinni tanlang:", reply_markup=get_games_inline_keyboard())
+
