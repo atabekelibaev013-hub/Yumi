@@ -222,4 +222,167 @@ def update_purchase_status(req_id: int, status: str):
     cursor.execute("UPDATE purchases SET status = ? WHERE id = ?", (status, req_id))
     conn.commit()
     conn.close()
-    
+    # --- FSM HOLATLARI ---
+class MurojaatState(StatesGroup):
+    waiting_for_text = State()
+
+class WithdrawState(StatesGroup):
+    waiting_for_amount = State()
+    waiting_for_code = State()
+
+class PhoneState(StatesGroup):
+    waiting_for_phone = State()
+
+class AdminPanelState(StatesGroup):
+    waiting_for_identifier = State()
+    waiting_for_new_balance = State()
+    waiting_for_ref_bonus = State()
+    waiting_for_broadcast = State()
+
+class GameState(StatesGroup):
+    waiting_for_bet = State()
+
+class BuyState(StatesGroup):
+    waiting_for_proof = State()
+
+class AdminMiqdorState(StatesGroup):
+    waiting_for_type = State()
+    waiting_for_pul_diamonds = State()
+    waiting_for_pul_price = State()
+    waiting_for_stars_count = State()
+    waiting_for_stars_diamonds = State()
+
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher(storage=MemoryStorage())
+
+# --- KLAVIATURALAR ---
+def get_main_menu(user_id: int):
+    keyboard = [
+        [
+            KeyboardButton(text="Olmos ishlash 💎"),
+            KeyboardButton(text="Profil 👤"),
+            KeyboardButton(text="Olmos yechish 💎")
+        ],
+        [
+            KeyboardButton(text="Olmos sotib olish 🛒"),
+            KeyboardButton(text="Oʻyin 🎮"),
+            KeyboardButton(text="Murojaat ☎️")
+        ]
+    ]
+    if user_id == ADMIN_ID:
+        keyboard.append([KeyboardButton(text="👨‍💻 Admin Panel")])
+    return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+
+admin_menu = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="💰 Hisob"), KeyboardButton(text="Ref bonus🔗")],
+        [KeyboardButton(text="Miqdor"), KeyboardButton(text="Reklama")],
+        [KeyboardButton(text="⬅️ Bosh menyu")]
+    ],
+    resize_keyboard=True
+)
+
+phone_menu = ReplyKeyboardMarkup(
+    keyboard=[[KeyboardButton(text="📱 Telefon raqamni yuborish", request_contact=True)]],
+    resize_keyboard=True,
+    one_time_keyboard=True
+)
+
+def get_sub_keyboard():
+    buttons = []
+    for ch in CHANNELS:
+        ch_url = ch.replace("@", "https://t.me/")
+        buttons.append([InlineKeyboardButton(text="📢 Kanalga obuna bo'lish", url=ch_url)])
+    buttons.append([InlineKeyboardButton(text="✅ Tekshirish", callback_data="check_sub")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def get_buy_type_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="Pulga 💸", callback_data="buy_type:pul"),
+            InlineKeyboardButton(text="Starsga ⭐", callback_data="buy_type:stars")
+        ],
+        [InlineKeyboardButton(text="❌ Bekor qilish", callback_data="cancel_buy")]
+    ])
+
+def get_pul_packages_keyboard():
+    packages_json = get_setting("pul_packages", "{}")
+    try:
+        packages = json.loads(packages_json)
+    except Exception:
+        packages = {"500": 5000, "1000": 10000, "2000": 20000, "5000": 50000, "10000": 100000, "20000": 200000}
+
+    buttons = []
+    for dia, price in packages.items():
+        price_formatted = f"{int(price):,}".replace(",", " ")
+        buttons.append([InlineKeyboardButton(text=f"💎 {dia} Almaz — {price_formatted} so'm", callback_data=f"select_pul:{dia}:{price}")])
+
+    buttons.append([InlineKeyboardButton(text="❌ Bekor qilish", callback_data="cancel_buy")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def get_stars_packages_keyboard():
+    packages_json = get_setting("stars_packages", "{}")
+    try:
+        packages = json.loads(packages_json)
+    except Exception:
+        packages = {"15": 260, "25": 420, "50": 840, "100": 1680}
+
+    buttons = []
+    for stars, dia in packages.items():
+        buttons.append([InlineKeyboardButton(text=f"⭐ {stars} Stars — {dia} 💎", callback_data=f"select_stars:{stars}:{dia}")])
+
+    buttons.append([InlineKeyboardButton(text="❌ Bekor qilish", callback_data="cancel_buy")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def get_pul_pay_keyboard(dia: int, price: int):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📋 Karta raqamini nusxalash", copy_text=types.CopyTextButton(text=CARD_NUMBER))],
+        [InlineKeyboardButton(text="✅ To'lov qildim", callback_data=f"confirm_pul_pay:{dia}:{price}")],
+        [InlineKeyboardButton(text="❌ Bekor qilish", callback_data="cancel_buy")]
+    ])
+
+def get_stars_pay_keyboard(stars: int, dia: int):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Giftni berdim✅", callback_data=f"confirm_stars_pay:{stars}:{dia}")],
+        [InlineKeyboardButton(text="❌ Bekor qilish", callback_data="cancel_buy")]
+    ])
+
+def get_admin_purchase_keyboard(req_id: int, user_id: int):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="Tasdiqlash ✅", callback_data=f"app_buy:{req_id}"),
+            InlineKeyboardButton(text="Rad etish ❌", callback_data=f"rej_buy:{req_id}")
+        ],
+        [InlineKeyboardButton(text="Ban berish 🚫", callback_data=f"ban_usr:{user_id}")]
+    ])
+
+def get_admin_withdraw_keyboard(req_id: int, user_id: int):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Tasdiqlash", callback_data=f"wd_app:{req_id}"),
+            InlineKeyboardButton(text="❌ Rad etish", callback_data=f"wd_rej:{req_id}")
+        ],
+        [InlineKeyboardButton(text="🚫 Ban berish", callback_data=f"ban_usr:{user_id}")]
+    ])
+
+def get_games_inline_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🎰 Slot", callback_data="game_select:slots"),
+            InlineKeyboardButton(text="🎳 Bouling", callback_data="game_select:bowling")
+        ],
+        [
+            InlineKeyboardButton(text="⚽️ Futbol", callback_data="game_select:football"),
+            InlineKeyboardButton(text="🎲 Zardob", callback_data="game_select:dice")
+        ],
+        [
+            InlineKeyboardButton(text="🎯 Darts", callback_data="game_select:darts"),
+            InlineKeyboardButton(text="🏀 Basketbol", callback_data="game_select:basketball")
+        ]
+    ])
+
+def get_play_inline_keyboard(game_type: str):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="O'ynash 🎮", callback_data=f"play_game:{game_type}")]
+    ])
+
