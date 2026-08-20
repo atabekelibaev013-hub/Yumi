@@ -385,4 +385,273 @@ def get_play_inline_keyboard(game_type: str):
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="O'ynash 🎮", callback_data=f"play_game:{game_type}")]
     ])
+# --- FOYDALANUVCHI TEKSHIRUVI VA START ---
 
+async def ensure_access(message: types.Message, state: FSMContext) -> bool:
+    user_id = message.from_user.id
+    full_name = message.from_user.full_name
+    username = message.from_user.username
+    
+    get_or_create_user(user_id, full_name, username)
+
+    if is_user_banned(user_id):
+        await message.answer("Siz botdan foydalanishdan bloklangansiz ❌")
+        return False
+
+    if not await check_subscription(bot, user_id):
+        await message.answer("Botdan foydalanishdan oldin majburiy kanalga obuna boʻling ❗", reply_markup=get_sub_keyboard())
+        return False
+    
+    if not has_phone(user_id):
+        await state.set_state(PhoneState.waiting_for_phone)
+        await message.answer("📱 Botdan foydalanish uchun telefon raqamingizni yuboring:", reply_markup=phone_menu)
+        return False
+        
+    return True
+
+@dp.message(CommandStart())
+async def start_cmd(message: types.Message, command: CommandObject, state: FSMContext):
+    await state.clear()
+    user_id = message.from_user.id
+    referrer_id = int(command.args) if command.args and command.args.isdigit() and int(command.args) != user_id else None
+    
+    get_or_create_user(user_id, message.from_user.full_name, message.from_user.username, referrer_id)
+
+    if not await ensure_access(message, state):
+        return
+
+    await message.answer("Siz asosiy menyudasiz🖥️", reply_markup=get_main_menu(user_id))
+
+@dp.callback_query(F.data == "check_sub")
+async def check_sub_callback(call: types.CallbackQuery, state: FSMContext):
+    user_id = call.from_user.id
+    if is_user_banned(user_id):
+        await call.answer("Siz bloklangansiz ❌", show_alert=True)
+        return
+
+    if await check_subscription(bot, user_id):
+        await call.message.delete()
+        if not has_phone(user_id):
+            await state.set_state(PhoneState.waiting_for_phone)
+            await call.message.answer("📱 Botdan foydalanish uchun telefon raqamingizni yuboring:", reply_markup=phone_menu)
+        else:
+            await call.message.answer("Siz asosiy menyudasiz🖥️", reply_markup=get_main_menu(user_id))
+    else:
+        await call.answer("❌ Siz hali kanalga obuna bo'lmadingiz!", show_alert=True)
+
+@dp.message(PhoneState.waiting_for_phone, F.contact)
+async def receive_phone(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
+    phone = message.contact.phone_number
+    
+    save_phone(user_id, phone, message.from_user.full_name, message.from_user.username)
+    
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT referrer_id, bonus_given FROM users WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    
+    ref_bonus = int(get_setting("ref_bonus", "10"))
+
+    if row and row[0] and not row[1]:
+        referrer_id = row[0]
+        today_str = str(date.today())
+        
+        cursor.execute("SELECT today_referrals, last_ref_date FROM users WHERE user_id = ?", (referrer_id,))
+        ref_user = cursor.fetchone()
+        
+        if ref_user:
+            ref_today, ref_date = ref_user[0], ref_user[1]
+            if ref_date != today_str:
+                ref_today = 0
+            ref_today += 1
+            
+            cursor.execute('''
+                UPDATE users 
+                SET balance = balance + ?,
+                    total_referrals = total_referrals + 1,
+                    today_referrals = ?,
+                    last_ref_date = ?
+                WHERE user_id = ?
+            ''', (ref_bonus, ref_today, today_str, referrer_id))
+            
+            cursor.execute("UPDATE users SET bonus_given = 1 WHERE user_id = ?", (user_id,))
+            conn.commit()
+            
+            try:
+                await bot.send_message(
+                    referrer_id,
+                    f"🎉 Siz taklif qilgan foydalanuvchi ({message.from_user.full_name}) telefon raqamini tasdiqladi!\nSizga <b>+{ref_bonus} 💎</b> berildi!",
+                    parse_mode="HTML"
+                )
+            except Exception:
+                pass
+    else:
+        conn.commit()
+    conn.close()
+    
+    await state.clear()
+    await message.answer("Siz asosiy menyudasiz🖥️", reply_markup=get_main_menu(user_id))
+
+# --- PROFIL VA REYTING ---
+
+@dp.message(F.text.in_(["Profil 👤", "Profil", "Balans 💎"]))
+async def profile_handler(message: types.Message, state: FSMContext):
+    if not await ensure_access(message, state):
+        return
+
+    user_id = message.from_user.id
+    username = f"@{message.from_user.username}" if message.from_user.username else "Mavjud emas"
+    balance, total_refs, _ = get_user_stats(user_id)
+
+    text = (
+        f"Foydalanuvchi:{username}\n"
+        f"ID: <code>{user_id}</code>\n"
+        f"Balans:{balance}💎\n"
+        f"Referallar soni:{total_refs}👥\n\n"
+        f"Eng koʻp olmos reytingini koʻrmoqchi boʻlsangiz /reyting buyriığını yuboring 💎"
+    )
+    await message.answer(text, parse_mode="HTML")
+
+@dp.message(Command("reyting"))
+async def reyting_handler(message: types.Message, state: FSMContext):
+    if not await ensure_access(message, state):
+        return
+
+    top_users = get_top_balance_users()
+    if not top_users:
+        await message.answer("🏆 Hali hech kimda olmos mavjud emas.")
+        return
+
+    text = "💎 <b>Eng ko'p olmosi bor Top 10 foydalanuvchi:</b>\n\n"
+    medals = ["🥇", "🥈", "🥉"]
+
+    for idx, (name, balance) in enumerate(top_users, start=1):
+        prefix = medals[idx-1] if idx <= 3 else f"{idx}."
+        safe_name = name.replace("<", "&lt;").replace(">", "&gt;") if name else "Foydalanuvchi"
+        text += f"{prefix} <b>{safe_name}</b> — {balance} 💎\n"
+
+    await message.answer(text, parse_mode="HTML")
+
+# --- OLMOS SOTIB OLISH 🛒 ---
+
+@dp.message(F.text == "Olmos sotib olish 🛒")
+async def buy_diamonds_start(message: types.Message, state: FSMContext):
+    if not await ensure_access(message, state):
+        return
+
+    await message.answer("Nima bilan xarid qilmoqchisiz❓", reply_markup=get_buy_type_keyboard())
+
+@dp.callback_query(F.data == "cancel_buy")
+async def cancel_buy_callback(call: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await call.message.delete()
+    await call.message.answer("Xarid bekor qilindi ❌")
+
+@dp.callback_query(F.data.startswith("buy_type:"))
+async def select_buy_type(call: types.CallbackQuery):
+    pay_type = call.data.split(":")[1]
+
+    if pay_type == "pul":
+        await call.message.edit_text("💎 <b>Almaz sotib olish</b>\n\nQuyidagi paketlardan birini tanlang:", reply_markup=get_pul_packages_keyboard(), parse_mode="HTML")
+    elif pay_type == "stars":
+        await call.message.edit_text("Quyidagi paketlardan birini tanlang:", reply_markup=get_stars_packages_keyboard())
+
+# PULGA XARID QILISH
+@dp.callback_query(F.data.startswith("select_pul:"))
+async def select_pul_package(call: types.CallbackQuery):
+    _, dia, price = call.data.split(":")
+    dia_int = int(dia)
+    price_int = int(price)
+    price_formatted = f"{price_int:,}".replace(",", " ")
+
+    text = (
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"💎 <b>Almaz sotib olish</b>\n\n"
+        f"📦 <b>Paket:</b> {dia_int} Almaz\n"
+        f"💰 <b>Narxi:</b> {price_formatted} so'm\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"💳 <b>To'lov kartasi</b>\n\n"
+        f"👤 <b>Karta egasi:</b> {CARD_HOLDER}\n"
+        f"💳 <b>Karta raqami:</b> <code>{CARD_NUMBER}</code>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"⚠️ <b>Eslatma</b>\n"
+        f'To\'lovni amalga oshirgandan so\'ng "✅ To\'lov qildim" tugmasini bosing va chek (screenshot) ni yuboring.\n'
+        f"━━━━━━━━━━━━━━━━━━━━━━"
+    )
+    await call.message.edit_text(text, reply_markup=get_pul_pay_keyboard(dia_int, price_int), parse_mode="HTML")
+
+@dp.callback_query(F.data.startswith("confirm_pul_pay:"))
+async def confirm_pul_payment(call: types.CallbackQuery, state: FSMContext):
+    _, dia, price = call.data.split(":")
+    await state.update_data(buy_type="pul", buy_dia=int(dia), buy_price=f"{price} so'm")
+    await state.set_state(BuyState.waiting_for_proof)
+    await call.message.answer("📷 To'lov chekini (screenshot yoki rasm) yuboring.")
+    await call.answer()
+
+# STARSGA XARID QILISH
+@dp.callback_query(F.data.startswith("select_stars:"))
+async def select_stars_package(call: types.CallbackQuery):
+    _, stars, dia = call.data.split(":")
+    stars_int = int(stars)
+    dia_int = int(dia)
+
+    text = (
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"💎 <b>Almaz sotib olish</b>\n\n"
+        f"📦 <b>Paket:</b> {dia_int} 💎\n"
+        f"💰 <b>Narxi:</b> {stars_int} ⭐\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"💳 <b>To'lov uchun foydalanuvchi👇</b>\n"
+        f"👤 {ADMIN_USERNAME}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"⚠️ <b>Eslatma</b>\n"
+        f"Giftni bergandan soʻng ❗\n"
+        f"Giftni berdim✅ tugmasini bosing va keyin (screen) rasm yuboring❗\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━"
+    )
+    await call.message.edit_text(text, reply_markup=get_stars_pay_keyboard(stars_int, dia_int), parse_mode="HTML")
+
+@dp.callback_query(F.data.startswith("confirm_stars_pay:"))
+async def confirm_stars_payment(call: types.CallbackQuery, state: FSMContext):
+    _, stars, dia = call.data.split(":")
+    await state.update_data(buy_type="stars", buy_dia=int(dia), buy_price=f"{stars} ⭐")
+    await state.set_state(BuyState.waiting_for_proof)
+    await call.message.answer("📷 To'lov chekini (screenshot yoki rasm) yuboring.")
+    await call.answer()
+
+# CHEK RASMINI QABUL QILISH
+@dp.message(BuyState.waiting_for_proof, F.photo)
+async def process_buy_proof(message: types.Message, state: FSMContext):
+    if not await ensure_access(message, state):
+        await state.clear()
+        return
+
+    data = await state.get_data()
+    pay_type = data.get("buy_type")
+    dia = data.get("buy_dia")
+    price = data.get("buy_price")
+    user_id = message.from_user.id
+    username = f"@{message.from_user.username}" if message.from_user.username else "Mavjud emas"
+
+    req_id = create_purchase(user_id, pay_type, dia, price)
+    await state.clear()
+
+    await message.answer("Toʻlov chekingiz tez orada tekshiriladi⏳")
+
+    admin_msg = (
+        f"📥 <b>Yangi to'lov arizasi!</b>\n\n"
+        f"👤 Foydalanuvchi: {username}\n"
+        f"🆔 ID: <code>{user_id}</code>\n"
+        f"💎 Paket: {dia} olmos\n"
+        f"💰 Narxi/To'lov: {price}\n"
+        f"💳 Turi: {'Pul orqali' if pay_type == 'pul' else 'Stars Gift orqali'}"
+    )
+
+    await message.copy_to(
+        chat_id=ADMIN_ID,
+        caption=admin_msg,
+        reply_markup=get_admin_purchase_keyboard(req_id, user_id),
+        parse_mode="HTML"
+)
+            
