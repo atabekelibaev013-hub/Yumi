@@ -16,7 +16,7 @@ from aiogram.types import (
 from aiohttp import web
 
 # --- ASOSIY SOZLAMALAR ---
-BOT_TOKEN = "8503188728:AAH5ktMt7AIOQIRfJvDFrMLPDnIvjufUH-A"
+BOT_TOKEN = "8686011931:AAHH-zU66HLMPRXBbIKKhhMY0QB06FQrc1U"
 ADMIN_ID = 7803078084
 ADMIN_USERNAME = "@next_biznes"
 DB_NAME = "bot_database.db"
